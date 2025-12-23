@@ -6,9 +6,10 @@ import shutil
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, '..', '..'))
-sys.path.append(PROJECT_ROOT)
 
-from src.drivers.ur_rtde_wrapper import URRobot
+# Setup Import Paths
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+from pkg.drivers.ur_rtde_wrapper import URRobot
 
 # --- CONFIGURATION ---
 ROBOT_IP = "192.168.50.82"

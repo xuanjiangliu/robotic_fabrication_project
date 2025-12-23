@@ -1,0 +1,21 @@
+network:
+  # Your specific IPs
+  control_pc_ip: "192.168.00.00"
+  robot_ip: "192.168.00.00"
+  printer_ip: "192.168.00.00"
+  moonraker_port: 7125
+
+system:
+  update_rate: 1.0  # Main loop runs every 1 second
+  
+waypoints:
+  # Placeholder values - You will update these with real robot data later
+  # Format: [x, y, z, rx, ry, rz]
+  home: [-0.13, -0.36, 0.25, 2.2, -2.2, 0.0]
+  approach_pick: [-0.4, -0.1, 0.3, 2.2, -2.2, 0.0]
+  pick: [-0.4, -0.1, 0.15, 2.2, -2.2, 0.0]
+  drop: [0.3, -0.2, 0.1, 2.2, -2.2, 0.0]
+
+printer_safety:
+  # Move print head to back-right corner so robot doesn't hit it
+  park_command: "G1 X330 Y330 F3000"
