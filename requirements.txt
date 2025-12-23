@@ -1,0 +1,10 @@
+ur_rtde    # SDU Robotics driver
+requests>=2.31.0   # For Moonraker HTTP API
+pyyaml>=6.0        # For parsing config files
+websockets>=11.0   # (Optional) If you want live status from Klipper
+black              # Code formatter
+flake8             # Linter
+numpy
+scipy
+opencv-python
+mediapipe

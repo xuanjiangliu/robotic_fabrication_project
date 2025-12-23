@@ -1,0 +1,22 @@
+{
+    "translation_x": 0.0,
+    "translation_y": 0.0,
+    "translation_z": 0.0,
+    "rotation_matrix": [
+        [
+            1.0,
+            0.0,
+            0.0
+        ],
+        [
+            0.0,
+            1.0,
+            0.0
+        ],
+        [
+            0.0,
+            0.0,
+            1.0
+        ]
+    ]
+}

@@ -1,0 +1,28 @@
+# Python Artifacts
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.coverage
+
+# Configuration (Don't upload private IPs or secrets)
+config/cell_config.yaml
+
+# Large Model Files (Too big for standard Git)
+models/*.pt
+models/*.onnx
+*.npz
+
+# Logs and Reports
+logs/
+*.log
+*.csv
+
+# System-specific
+.DS_Store
+.vscode/
+.idea/
+
+# Virtual Environments 
+venv/
+.venv/
