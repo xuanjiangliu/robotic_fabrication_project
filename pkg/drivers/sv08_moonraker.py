@@ -19,9 +19,9 @@ class MoonrakerClient:
             data = response.json()
             state = data['result']['status']['print_stats']['state']
             return state
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             self.logger.error(f"Connection failed: {e}")
-            return "error"
+            return "offline"
 
     def get_progress(self):
         """Returns the print progress as a percentage (0.0 to 1.0)."""
@@ -34,34 +34,69 @@ class MoonrakerClient:
         except Exception:
             return 0.0
 
-    def execute_gcode(self, gcode_command):
-        """Sends a G-code command (or macro) to the printer."""
-        url = f"{self.base_url}/printer/gcode/script"
-        payload = {'script': gcode_command}
-        try:
-            requests.post(url, json=payload, timeout=2)
-            self.logger.info(f"Sent G-Code: {gcode_command}")
-            return True
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Failed to send G-Code: {e}")
-            return False
-        
     def get_bed_temperature(self):
         """Returns the current bed temperature in Celsius."""
-        # Klipper Object Model query
         url = f"{self.base_url}/printer/objects/query?heater_bed"
         try:
             response = requests.get(url, timeout=2)
             data = response.json()
-            # Navigate the JSON structure: result -> status -> heater_bed -> temperature
             temp = data['result']['status']['heater_bed']['temperature']
             return float(temp)
-        except Exception as e:
-            self.logger.error(f"Failed to read Temp: {e}")
-            return 999.0 # Return high value to prevent unsafe harvesting on error
+        except Exception:
+            return 999.0 
 
-# Quick test if run directly
-if __name__ == "__main__":
-    # Uses your IP from context
-    client = MoonrakerClient("192.168.50.231") 
-    print(f"Printer State: {client.get_status()}")
+    # --- NEW: CONSOLE LOGGING ---
+    def get_console_lines(self, limit=10):
+        """
+        Fetches the last N lines from the Klipper G-Code console.
+        """
+        url = f"{self.base_url}/server/gcode_store"
+        try:
+            response = requests.get(url, timeout=2)
+            data = response.json()
+            # Klipper returns a list of objects: [{'message': '...', 'time': ...}]
+            logs = data['result']['gcode_store']
+            
+            # Extract messages and keep the last 'limit'
+            messages = [entry['message'] for entry in logs]
+            return messages[-limit:]
+        except Exception:
+            return []
+
+    # --- ACTION METHODS ---
+    def upload_gcode(self, gcode_content, filename="job.gcode"):
+        """Uploads G-code string to the printer."""
+        url = f"{self.base_url}/server/files/upload"
+        files = {'file': (filename, gcode_content, 'application/octet-stream')}
+        data = {'root': 'gcodes'} 
+        
+        try:
+            response = requests.post(url, files=files, data=data, timeout=5)
+            response.raise_for_status()
+            self.logger.info(f"Uploaded {filename}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Upload failed: {e}")
+            return False
+
+    def start_print(self, filename="job.gcode"):
+        """Starts printing the specified file."""
+        url = f"{self.base_url}/printer/print/start"
+        payload = {'filename': filename}
+        try:
+            requests.post(url, json=payload, timeout=2)
+            self.logger.info(f"Started print: {filename}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to start print: {e}")
+            return False
+
+    def execute_gcode(self, gcode_command):
+        """Sends a raw G-code command."""
+        url = f"{self.base_url}/printer/gcode/script"
+        payload = {'script': gcode_command}
+        try:
+            requests.post(url, json=payload, timeout=2)
+            return True
+        except Exception:
+            return False

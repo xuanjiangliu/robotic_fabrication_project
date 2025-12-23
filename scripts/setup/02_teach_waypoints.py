@@ -13,7 +13,7 @@ from pkg.drivers.ur_rtde_wrapper import URRobot
 
 # --- CONFIGURATION ---
 ROBOT_IP = "192.168.50.82"
-TARGET_FILE = os.path.join(PROJECT_ROOT, 'src', 'main.py')
+TARGET_FILE = os.path.join(PROJECT_ROOT, 'services', 'orchestrator.py')
 
 # Define the sequence of waypoints to teach
 WAYPOINT_SEQUENCE = [
@@ -88,7 +88,7 @@ def teach_mode():
                     f.write(new_content)
                 print(f"   ✅ Updated {var_name}")
                 
-            print("\n🎉 Done. Check main.py for clean brackets!")
+            print("\n🎉 Done.")
         else:
             print("\nNo points captured.")
 

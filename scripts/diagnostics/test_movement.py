@@ -3,8 +3,9 @@ import os
 import time
 import logging
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from src.drivers.ur_rtde_wrapper import URRobot
+# Setup Import Paths
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+from pkg.drivers.ur_rtde_wrapper import URRobot
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("RobotTest")

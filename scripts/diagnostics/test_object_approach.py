@@ -7,12 +7,12 @@ import math
 from scipy.spatial.transform import Rotation as R
 from ultralytics import YOLO # type: ignore
 
-# Adjust path to find src
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Setup Import Paths
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
-from src.drivers.ur_rtde_wrapper import URRobot
-from src.utils.spatial import SpatialManager
-from src.vision.eye_in_hand import EyeInHand
+from pkg.drivers.ur_rtde_wrapper import URRobot
+from pkg.utils.spatial import SpatialManager
+from pkg.vision.eye_in_hand import EyeInHand
 
 # --- CONFIGURATION ---
 ROBOT_IP = "192.168.50.82"

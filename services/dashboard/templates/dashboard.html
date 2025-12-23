@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RoboFab Control Center</title>
+    <style>
+        :root {
+            --primary: #2c3e50;
+            --accent: #3498db;
+            --success: #27ae60;
+            --warning: #f39c12;
+            --danger: #c0392b;
+            --bg: #ecf0f1;
+            --card-bg: #ffffff;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            margin: 0;
+            padding: 20px;
+            color: var(--primary);
+        }
+
+        /* Layout Grid */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            gap: 20px;
+            grid-template-columns: 2fr 1fr;
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        }
+
+        .card h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            color: #7f8c8d;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 2px solid #f0f0f0;
+            padding-bottom: 10px;
+        }
+
+        /* Header / HUD */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--primary);
+            color: white;
+            padding: 15px 30px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+
+        .status-badge {
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9rem;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .status-online {
+            color: #2ecc71;
+            border: 1px solid #2ecc71;
+        }
+
+        .status-offline {
+            color: #e74c3c;
+            border: 1px solid #e74c3c;
+        }
+
+        /* Active Job Panel */
+        .telemetry-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .stat-box {
+            text-align: center;
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            display: block;
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            color: #7f8c8d;
+            text-transform: uppercase;
+        }
+
+        /* Progress Bar */
+        .progress-container {
+            background: #dfe6e9;
+            border-radius: 10px;
+            height: 20px;
+            margin-top: 15px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            background: var(--success);
+            height: 100%;
+            width: 0%;
+            transition: width 0.5s ease;
+        }
+
+        /* Console */
+        .console-box {
+            background: #1e1e1e;
+            color: #00ff00;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Consolas', monospace;
+            height: 180px;
+            overflow-y: auto;
+            font-size: 0.85rem;
+            line-height: 1.4;
+            display: flex;
+            flex-direction: column-reverse;
+        }
+
+        .console-line {
+            white-space: pre-wrap;
+            word-break: break-all;
+            border-bottom: 1px solid #333;
+            padding: 2px 0;
+        }
+
+        .console-line:first-child {
+            border-bottom: none;
+        }
+
+        /* Lists (Queue/History) */
+        .job-list {
+            list-style: none;
+            padding: 0;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .job-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .job-item:last-child {
+            border-bottom: none;
+        }
+
+        .job-id {
+            font-weight: bold;
+        }
+
+        .job-meta {
+            font-size: 0.85rem;
+            color: #95a5a6;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 5px;
+        }
+
+        /* Controls Deck */
+        .control-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .setting-group label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .setting-group input[type="range"] {
+            width: 100%;
+        }
+
+        .val-display {
+            float: right;
+            color: var(--accent);
+        }
+
+        /* Upload Zone */
+        .upload-zone {
+            display: block;
+            /* <--- This fixes the boundary issue */
+            border: 2px dashed #bdc3c7;
+            border-radius: 8px;
+            padding: 30px 20px;
+            /* Increased vertical padding for a better target */
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: #fdfdfd;
+        }
+
+        .upload-zone:hover {
+            border-color: var(--accent);
+            background: #f0f8ff;
+            /* Light blue tint on hover */
+            transform: translateY(-1px);
+        }
+
+        .upload-zone input {
+            display: none;
+        }
+
+        /* Buttons */
+        button {
+            border: none;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: opacity 0.2s;
+        }
+
+        button:hover {
+            opacity: 0.8;
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-warning {
+            background: var(--warning);
+            color: white;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+
+        .btn-small {
+            padding: 4px 8px;
+            font-size: 0.8rem;
+        }
+
+        .estop-btn {
+            background: #e74c3c;
+            color: white;
+            font-size: 1.2rem;
+            padding: 10px 20px;
+            border: 2px solid white;
+        }
+
+        /* Alerts */
+        #alert-banner {
+            display: none;
+            background: var(--warning);
+            color: white;
+            padding: 15px;
+            text-align: center;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="header full-width">
+        <div>
+            <h1 style="margin:0; font-size:1.5rem;">🤖 RoboFab Control Center</h1>
+            <small>System Time: <span id="sys-time">--:--</span></small>
+        </div>
+        <div style="display:flex; gap:20px; align-items:center;">
+            <span id="robot-badge" class="status-badge status-offline">ROBOT</span>
+            <span id="printer-badge" class="status-badge status-offline">PRINTER</span>
+            <button class="estop-btn" onclick="triggerEstop()">🚨 E-STOP</button>
+        </div>
+    </div>
+
+    <div id="alert-banner" class="full-width">
+        ⚠️ ALERT: <span id="alert-msg">System Normal</span>
+    </div>
+
+    <div class="container">
+        <div style="display:flex; flex-direction:column; gap:20px;">
+
+            <div class="card">
+                <h2>Active Job</h2>
+                <div id="active-job-panel">
+                    <div style="display:flex; justify-content:space-between; align-items:end;">
+                        <div>
+                            <span class="stat-label">Job ID</span>
+                            <span class="stat-value" id="active-id">--</span>
+                        </div>
+                        <div class="status-badge" style="background:#3498db; color:white;" id="active-status">IDLE</div>
+                    </div>
+
+                    <div class="progress-container">
+                        <div class="progress-bar" id="progress-bar"></div>
+                    </div>
+
+                    <div class="telemetry-grid">
+                        <div class="stat-box">
+                            <span class="stat-value" id="bed-temp">0°C</span>
+                            <span class="stat-label">Bed Temp</span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-value" id="robot-state">Idle</span>
+                            <span class="stat-label">Robot State</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Printer Console</h2>
+                <div id="console-box" class="console-box">
+                    <div style="color:#555; text-align:center; margin-top:80px;">Waiting for connection...</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Control Deck</h2>
+                <div class="control-grid">
+                    <div class="setting-group">
+                        <label>Cooldown Target <span id="val-temp" class="val-display">45°C</span></label>
+                        <input type="range" min="20" max="60" value="45" id="input-temp" onchange="updateSettings()">
+                    </div>
+
+                    <div class="setting-group">
+                        <label>Speed Override <span id="val-speed" class="val-display">100%</span></label>
+                        <input type="range" min="10" max="100" value="100" id="input-speed" onchange="updateSettings()">
+                    </div>
+
+                    <div class="setting-group">
+                        <label>
+                            <input type="checkbox" id="chk-harvest" onchange="updateSettings()" checked>
+                            Auto-Harvest
+                        </label>
+                        <label>
+                            <input type="checkbox" id="chk-skip" onchange="updateSettings()">
+                            Skip Vision Check
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:20px;">
+
+            <div class="card">
+                <div
+                    style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #f0f0f0; padding-bottom:10px; margin-bottom:10px;">
+                    <h2 style="border:none; margin:0; padding:0;">Queue</h2>
+                    <button id="btn-pause" class="btn-warning btn-small" onclick="togglePause()">⏸ Pause</button>
+                </div>
+
+                <ul class="job-list" id="queue-list">
+                    <li style="text-align:center; color:#999; padding:20px;">No pending jobs</li>
+                </ul>
+            </div>
+
+            <div class="card">
+                <h2>Manual Upload</h2>
+                <label class="upload-zone" id="drop-zone">
+                    <span id="file-label">📂 Click to Select G-Code</span>
+                    <input type="file" id="file-input" accept=".gcode,.txt">
+                </label>
+                <div style="margin-top:10px; display:flex; gap:10px;">
+                    <input type="number" id="manual-est" placeholder="Est. Grams (e.g. 50)"
+                        style="flex:1; padding:8px; border:1px solid #ddd; border-radius:6px;">
+                    <button class="btn-primary" onclick="uploadJob()">⬆ Queue</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>History</h2>
+                <ul class="job-list" id="history-list"></ul>
+            </div>
+
+            <div class="card">
+                <h2>Maintenance</h2>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <span class="stat-label">Material Remaining</span>
+                        <div class="stat-value" style="font-size:1.5rem;" id="mat-level">1000g</div>
+                    </div>
+                    <button class="btn-primary" onclick="refillMaterial()">♻️ Refill</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- API INTERACTIONS ---
+        const API_URL = "/api";
+        let isPaused = false;
+
+        async function fetchDashboard() {
+            try {
+                const res = await fetch(`${API_URL}/dashboard_data`);
+                const data = await res.json();
+                render(data);
+            } catch (err) {
+                console.error("Poll Error:", err);
+                document.getElementById('robot-badge').className = "status-badge status-offline";
+            }
+        }
+
+        function render(data) {
+            // 1. Telemetry
+            document.getElementById('robot-badge').className = `status-badge ${data.telemetry.robot === 'Offline' ? 'status-offline' : 'status-online'}`;
+            document.getElementById('printer-badge').className = `status-badge ${data.telemetry.printer === 'Offline' ? 'status-offline' : 'status-online'}`;
+
+            document.getElementById('bed-temp').innerText = data.telemetry.temp.toFixed(1) + "°C";
+            document.getElementById('robot-state').innerText = data.telemetry.robot;
+
+            // Active Job
+            if (data.current_job) {
+                document.getElementById('active-id').innerText = data.current_job.id;
+                document.getElementById('active-status').innerText = "RUNNING";
+                document.getElementById('active-status').style.background = "#27ae60";
+                document.getElementById('progress-bar').style.width = (data.telemetry.progress * 100) + "%";
+            } else {
+                document.getElementById('active-id').innerText = "--";
+                document.getElementById('active-status').innerText = "IDLE";
+                document.getElementById('active-status').style.background = "#bdc3c7";
+                document.getElementById('progress-bar').style.width = "0%";
+            }
+
+            // 2. Console
+            const consoleBox = document.getElementById('console-box');
+            consoleBox.innerHTML = '';
+            if (data.telemetry.console && data.telemetry.console.length > 0) {
+                data.telemetry.console.forEach(line => {
+                    const div = document.createElement('div');
+                    div.className = 'console-line';
+                    div.innerText = `> ${line}`;
+                    consoleBox.prepend(div);
+                });
+            } else {
+                consoleBox.innerHTML = '<div style="color:#555; text-align:center; padding-top:20px;">No messages</div>';
+            }
+
+            // 3. Settings Reflection
+            document.getElementById('val-temp').innerText = data.settings.bed_cooldown_target + "°C";
+            document.getElementById('val-speed').innerText = (data.settings.speed_override * 100).toFixed(0) + "%";
+            document.getElementById('mat-level').innerText = data.settings.material_remaining_g.toFixed(0) + "g";
+
+            // 4. Alerts & Flags
+            isPaused = data.flags.paused;
+            const pauseBtn = document.getElementById('btn-pause');
+            pauseBtn.innerText = isPaused ? "▶️ Resume" : "⏸ Pause";
+            pauseBtn.className = isPaused ? "btn-primary btn-small" : "btn-warning btn-small";
+
+            const banner = document.getElementById('alert-banner');
+            if (data.flags.material_alert) {
+                banner.style.display = 'block';
+                document.getElementById('alert-msg').innerText = "Material Low! Queue Paused.";
+            } else if (isPaused) {
+                banner.style.display = 'block';
+                document.getElementById('alert-msg').innerText = "System Paused by User.";
+            } else {
+                banner.style.display = 'none';
+            }
+
+            // 5. Queue List
+            const queueList = document.getElementById('queue-list');
+            queueList.innerHTML = '';
+            if (data.queue.length === 0) {
+                queueList.innerHTML = '<li style="text-align:center; color:#999; padding:20px;">No pending jobs</li>';
+            } else {
+                data.queue.forEach((job, index) => {
+                    const li = document.createElement('li');
+                    li.className = 'job-item';
+                    li.innerHTML = `
+                        <div>
+                            <div class="job-id">${job.name || job.id}</div>
+                            <div class="job-meta">Est: ${job.material_est_g}g</div>
+                        </div>
+                        <div class="btn-group">
+                            ${index > 0 ? `<button class="btn-primary btn-small" onclick="promoteJob('${job.id}')">⬆</button>` : ''}
+                            <button class="btn-danger btn-small" onclick="deleteJob('${job.id}')">✕</button>
+                        </div>
+                    `;
+                    queueList.appendChild(li);
+                });
+            }
+
+            // 6. History
+            const histList = document.getElementById('history-list');
+            histList.innerHTML = '';
+            data.history.slice().reverse().forEach(job => {
+                const li = document.createElement('li');
+                li.className = 'job-item';
+                li.innerHTML = `
+                    <div class="job-id">${job.id}</div>
+                    <div class="job-meta status-online">Success</div>
+                `;
+                histList.appendChild(li);
+            });
+
+            const now = new Date();
+            document.getElementById('sys-time').innerText = now.toLocaleTimeString();
+        }
+
+        // --- UPLOAD LOGIC ---
+        document.getElementById('file-input').addEventListener('change', function (e) {
+            if (this.files && this.files[0]) {
+                document.getElementById('file-label').innerText = "📄 " + this.files[0].name;
+            }
+        });
+
+        async function uploadJob() {
+            const fileInput = document.getElementById('file-input');
+            const estInput = document.getElementById('manual-est');
+
+            if (!fileInput.files || !fileInput.files[0]) {
+                alert("Please select a file first.");
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+
+            reader.onload = async function (e) {
+                const gcodeContent = e.target.result;
+                const estGrams = parseFloat(estInput.value) || 50.0; // Default 50g
+
+                const payload = {
+                    name: file.name,
+                    gcode: gcodeContent,
+                    material_est: estGrams,
+                    metadata: { type: "manual_upload" }
+                };
+
+                try {
+                    const res = await fetch(`${API_URL}/jobs`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (res.ok) {
+                        // Reset Form
+                        fileInput.value = "";
+                        document.getElementById('file-label').innerText = "📂 Click to Select G-Code";
+                        estInput.value = "";
+                        fetchDashboard(); // Refresh UI
+                    } else {
+                        alert("Upload Failed: Server Error");
+                    }
+                } catch (err) {
+                    alert("Upload Failed: Connection Error");
+                }
+            };
+
+            reader.readAsText(file);
+        }
+
+        // --- EXISTING ACTIONS ---
+        async function updateSettings() {
+            const payload = {
+                bed_cooldown_target: parseFloat(document.getElementById('input-temp').value),
+                speed_override: parseFloat(document.getElementById('input-speed').value) / 100.0,
+                auto_harvest: document.getElementById('chk-harvest').checked,
+                skip_inspection: document.getElementById('chk-skip').checked
+            };
+            await fetch(`${API_URL}/settings/update`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            fetchDashboard();
+        }
+
+        async function togglePause() {
+            const action = isPaused ? 'resume' : 'pause';
+            await fetch(`${API_URL}/queue/control`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: action })
+            });
+            fetchDashboard();
+        }
+
+        async function deleteJob(id) {
+            if (!confirm("Delete this job?")) return;
+            await fetch(`${API_URL}/jobs/${id}/delete`, { method: 'POST' });
+            fetchDashboard();
+        }
+
+        async function promoteJob(id) {
+            await fetch(`${API_URL}/jobs/${id}/promote`, { method: 'POST' });
+            fetchDashboard();
+        }
+
+        async function refillMaterial() {
+            const amount = prompt("Enter grams added:", "1000");
+            if (amount) {
+                await fetch(`${API_URL}/maintenance/refill`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ amount: parseFloat(amount) })
+                });
+                fetchDashboard();
+            }
+        }
+
+        async function triggerEstop() {
+            if (!confirm("🔴 EMERGENCY STOP? This will kill power.")) return;
+            await fetch(`${API_URL}/emergency/stop`, { method: 'POST' });
+            alert("E-STOP TRIGGERED. Please reset system manually.");
+        }
+
+        setInterval(fetchDashboard, 1000);
+        fetchDashboard();
+    </script>
+</body>
+
+</html>

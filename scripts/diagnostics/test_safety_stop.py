@@ -2,10 +2,9 @@ import sys
 import os
 import time
 
-# Add src to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from src.drivers.ur_rtde_wrapper import URRobot
+# Setup Import Paths
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+from pkg.drivers.ur_rtde_wrapper import URRobot
 
 ROBOT_IP = "192.168.50.82"
 
