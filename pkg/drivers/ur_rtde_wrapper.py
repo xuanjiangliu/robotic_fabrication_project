@@ -1,7 +1,7 @@
 import socket
 import time
 import rtde_receive # type: ignore
-from src.drivers import robotiq_preamble
+from pkg.drivers import robotiq_preamble
 
 class URRobot:
     def __init__(self, ip_address):
@@ -13,22 +13,16 @@ class URRobot:
     def connect(self):
         print(f"[UR7e] Connecting to {self.ip_address}...")
         try:
-            # 1. Connect RTDE
             self.rtde_r = rtde_receive.RTDEReceiveInterface(self.ip_address)
-            
-            # 2. Verify Socket
-            self._send_socket_command('textmsg("RoboFab: Python Connected")\n')
             self.connected = True
             
-            print("[UR7e] Connected. initializing Gripper via Modbus...")
+            # Send Modbus Activation
+            print("[UR7e] Connected. Activating Gripper (Modbus)...")
+            self._send_socket_command('textmsg("EVOFAB: Activating Modbus...")\n')
+            self._send_socket_command(robotiq_preamble.get_activation_script())
             
-            # 3. Send Activation Script
-            script = robotiq_preamble.get_activation_script()
-            self._send_socket_command(script)
-            
-            # Wait for "Click-Clack"
-            time.sleep(3.0)
-            
+            # Wait for physical activation
+            time.sleep(3.5)
             return True
         except Exception as e:
             print(f"[UR7e] Connection Failed: {e}")
@@ -39,11 +33,7 @@ class URRobot:
     def get_joint_angles(self):
         if self.rtde_r: return self.rtde_r.getActualQ()
         return None
-
-    def get_joint_speeds(self):
-        if self.rtde_r: return self.rtde_r.getActualQd()
-        return [0.0] * 6 
-
+    
     def get_tcp_pose(self):
         if self.rtde_r: return self.rtde_r.getActualTCPPose()
         return [0.0] * 6
@@ -51,35 +41,32 @@ class URRobot:
     def is_moving(self):
         if self.rtde_r:
             try:
-                speeds = self.rtde_r.getActualQd()
-                return any(abs(s) > 0.01 for s in speeds)
-            except Exception:
+                return any(abs(s) > 0.01 for s in self.rtde_r.getActualQd())
+            except:
                 return False
         return False
 
-    # --- MOVEMENT ---
-    def move_j(self, joint_configuration, speed=1.05, acceleration=1.4):
+    # --- MOTION ---
+    def move_j(self, q, speed=1.05, acc=1.4):
         if not self.connected: return
-        q_str = "[" + ",".join([f"{x:.4f}" for x in joint_configuration]) + "]"
-        command = f"movej({q_str}, a={acceleration}, v={speed})\n"
-        self._send_socket_command(command)
+        q_str = "[" + ",".join([f"{x:.4f}" for x in q]) + "]"
+        self._send_socket_command(f"movej({q_str}, a={acc}, v={speed})\n")
 
-    def move_l(self, pose, speed=0.25, acceleration=0.5):
+    def move_l(self, p, speed=0.25, acc=0.5):
         if not self.connected: return
-        pose_str = "p[" + ",".join([f"{x:.5f}" for x in pose]) + "]"
-        command = f"movel({pose_str}, a={acceleration}, v={speed})\n"
-        self._send_socket_command(command)
+        p_str = "p[" + ",".join([f"{x:.5f}" for x in p]) + "]"
+        self._send_socket_command(f"movel({p_str}, a={acc}, v={speed})\n")
 
     def stop(self):
         self._send_socket_command("stopj(2.0)\n")
 
     # --- GRIPPER ---
     def gripper_close(self):
-        print("[UR7e] Gripper CLOSE...")
+        print("[UR7e] Gripper CLOSE (Modbus)...")
         self._send_socket_command(robotiq_preamble.get_move_script(255))
 
     def gripper_open(self):
-        print("[UR7e] Gripper OPEN...")
+        print("[UR7e] Gripper OPEN (Modbus)...")
         self._send_socket_command(robotiq_preamble.get_move_script(0))
 
     def disconnect(self):

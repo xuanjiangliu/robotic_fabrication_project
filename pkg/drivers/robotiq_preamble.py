@@ -1,60 +1,55 @@
 """
-Robotiq Hand-E Driver (Modbus RTU Mode)
+Robotiq Hand-E Driver (Direct Hardware Connection - Slave ID 9)
 ---------------------------------------------------------
-HARDWARE SETTINGS (Tablet):
-- Modbus Device Frequency: 10 Hz
-- Slave ID: 1
-- Sequential Mode: ON
-- Signals: Grip_CMD (0), Grip_POS (1), Grip_FOR (2)
+Target: Physical Modbus RTU Registers (1000, 1001, 1002)
+Hardware Default Slave ID: 9
 ---------------------------------------------------------
 """
 
 def get_activation_script():
     """
-    Activates gripper.
+    Activates the gripper using Physical Register 1000.
     """
     return """
-def rq_activate():
-    # Diagnostic
-    popup("RoboFab: Activating (10Hz Mode)...", "Status", False, False, blocking=False)
-    
-    # 1. Reset (Write 0 to Grip_CMD)
+def rq_activate_direct():
+    # 1. Reset (Write 0 to Register 1000)
     modbus_set_output_register("Grip_CMD", 0)
-    sleep(0.2)
+    sleep(0.5)
     
-    # 2. Set Force/Speed (Write to Grip_FOR)
-    # 255 Speed, 150 Force -> 65430
+    # 2. Set Force & Speed (Register 1002)
+    # Byte 4 (Speed 255) + Byte 5 (Force 150) -> 0xFF96 = 65430
     modbus_set_output_register("Grip_FOR", 65430)
-    sleep(0.2)
+    sleep(0.1)
 
-    # 3. Activate (Write 256 to Grip_CMD)
+    # 3. Activate (Register 1000)
+    # Byte 0 (Action Request) = 1 (Activate) -> 256 (0x0100)
     modbus_set_output_register("Grip_CMD", 256)
     
+    # Wait for activation movement
     sleep(2.0)
-    popup("RoboFab: Gripper Active!", "Success", False, False, blocking=False)
 end
-rq_activate()
+rq_activate_direct()
 """
 
 def get_move_script(position_0_255):
     """
-    Moves gripper.
-    Waits 0.2s between setting Position and triggering Action
-    to align with the 10Hz Modbus cycle.
+    Moves gripper using Physical Registers 1001 (Pos) and 1000 (Cmd).
     """
     pos = max(0, min(255, int(position_0_255)))
     
-    # 2304 = 0x0900 (Activate + GoTo)
     return f"""
-def rq_move():
-    # 1. Set Position (Address 1)
+def rq_move_direct():
+    # 1. Set Target Position (Register 1001)
+    # Byte 3 is Position. Value 0-255 directly sets the lower byte.
     modbus_set_output_register("Grip_POS", {pos})
     
-    # SAFETY PAUSE: 0.2s ensures we catch the next 10Hz cycle
-    sleep(0.2)
+    # SAFETY PAUSE (10Hz bus limit)
+    sleep(0.1)
     
-    # 2. Set Action (Address 0)
+    # 2. Trigger Action (Register 1000)
+    # Activate (0x01) + GoTo (0x08) -> 0x09
+    # Shifted to Byte 0 position -> 2304 (0x0900)
     modbus_set_output_register("Grip_CMD", 2304)
 end
-rq_move()
+rq_move_direct()
 """

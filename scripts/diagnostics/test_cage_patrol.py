@@ -4,10 +4,9 @@ import time
 import json
 import logging
 
-# Adjust path to find project root
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from src.drivers.ur_rtde_wrapper import URRobot
+# Setup Import Paths
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+from pkg.drivers.ur_rtde_wrapper import URRobot
 
 # --- CONFIGURATION ---
 ROBOT_IP = "192.168.50.82"
@@ -25,7 +24,7 @@ def test_patrol():
     # 1. Load the JSON Data
     if not os.path.exists(CAGE_FILE):
         logger.error(f"❌ Cage file not found: {CAGE_FILE}")
-        logger.error("Run 'src/utils/teach_cage_interactive.py' first!")
+        logger.error("Run 'teach_cage_interactive.py' first!")
         return
 
     with open(CAGE_FILE, 'r') as f:
