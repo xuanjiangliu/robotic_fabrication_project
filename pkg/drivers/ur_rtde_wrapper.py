@@ -5,12 +5,11 @@ import time
 class URRobot:
     """
     Telemetry Monitor & Safety Stop.
-    Motion and Gripper logic are now handled by the Tablet Program.
-    This class ensures we can see what's happening and STOP if needed.
+    Now includes Remote Freedrive Control.
     """
     def __init__(self, ip_address):
         self.ip_address = ip_address
-        self.port_safety = 30002 # Primary Interface (best for stopping)
+        self.port_safety = 30002 
         self.rtde_r = None
         self.connected = False
 
@@ -26,30 +25,39 @@ class URRobot:
             self.connected = False
             return False
 
-    def get_status(self):
-        """Returns relevant dashboard data for your Orchestrator."""
-        if not self.connected: return {}
-        try:
-            return {
-                "joints": self.rtde_r.getActualQ(), # type: ignore
-                "tcp": self.rtde_r.getActualTCPPose(), # type: ignore
-                "safety_mode": self.rtde_r.getSafetyMode(), # type: ignore
-                "robot_mode": self.rtde_r.getRobotMode(),   # type: ignore
-                "is_moving": any(abs(v) > 0.01 for v in self.rtde_r.getActualQd()) # type: ignore
-            }
-        except:
-            return {}
+    def get_tcp_pose(self):
+        if not self.connected or self.rtde_r is None:
+            return None
+        return self.rtde_r.getActualTCPPose()
 
-    def stop(self):
+    def enable_freedrive_translation_only(self):
         """
-        Emergency Stop.
-        Sends 'stopj(2.0)' to Port 30002.
-        This will effectively PAUSE/STOP the running Tablet Program.
+        Locks Orientation (Rx, Ry, Rz) but allows Translation (X, Y, Z).
+        Useful for keeping camera level while moving by hand.
         """
-        print("[Monitor] Sending STOP command...")
+        print("[Monitor] Engaging TRANSLATION-ONLY Freedrive...")
+        # freedrive_mode(frame, constraints)
+        # constraints: [x, y, z, rx, ry, rz] -> 1=Free, 0=Fixed
+        script = """
+        def start_level_freedrive():
+            freedrive_mode(p[0,0,0,0,0,0], [1,1,1,0,0,0])
+            while (True):
+                sync()
+            end
+        end
+        """
+        self._send_socket_command(script)
+        self._send_socket_command("start_level_freedrive()\n")
+
+    def stop_freedrive(self):
+        """Exits freedrive mode."""
+        print("[Monitor] Stopping Freedrive...")
+        self._send_socket_command("end_freedrive_mode()\n")
+        # Sending a stopj also helps kill the 'while' loop in the script above
         self._send_socket_command("stopj(2.0)\n")
 
     def disconnect(self):
+        self.stop_freedrive()
         if self.rtde_r: 
             try:
                 self.rtde_r.disconnect()
@@ -58,7 +66,6 @@ class URRobot:
         self.connected = False
 
     def _send_socket_command(self, cmd_str):
-        """Helper to send raw scripts to the Primary Interface."""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(1)

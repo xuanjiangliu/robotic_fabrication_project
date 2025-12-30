@@ -86,7 +86,7 @@ def main():
         return
 
     # Home Robot
-    bot.move_j(HOME_JOINTS, speed=0.5)
+    bot.move_j(HOME_JOINTS, speed=0.5) # type: ignore
 
     while True:
         try:

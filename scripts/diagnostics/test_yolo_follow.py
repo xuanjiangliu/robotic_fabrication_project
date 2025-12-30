@@ -4,7 +4,7 @@ import time
 import cv2
 import socket
 import numpy as np
-from ultralytics import YOLO
+from ultralytics import YOLO # type: ignore
 
 # --- SAFETY CONFIGURATION ---
 ROBOT_IP = "192.168.50.82"
@@ -28,7 +28,7 @@ def init_camera_robust():
     print(f"Connecting to Camera {CAMERA_INDEX}...")
     cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_MSMF)
     if cap.isOpened():
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG')) # type: ignore
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         return cap

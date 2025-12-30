@@ -1,169 +1,231 @@
 import sys
 import os
 import time
+import socket
 import cv2
 import numpy as np
-import math
 from scipy.spatial.transform import Rotation as R
-from ultralytics import YOLO # type: ignore
 
 # Setup Import Paths
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-
 from pkg.drivers.ur_rtde_wrapper import URRobot
-from pkg.utils.spatial import SpatialManager
 from pkg.vision.eye_in_hand import EyeInHand
 
 # --- CONFIGURATION ---
 ROBOT_IP = "192.168.50.82"
-CAMERA_INDEX = 1
+PORT_CMD = 30002            # Port for sending commands
+CAMERA_INDEX = 1            # Orbbec RGB
 
-# Detection Settings (tuned for Benchy)
-CONFIDENCE_THRESHOLD = 0.25 
-STABILITY_TIME = 2.0        
-IGNORE_CLASSES = [0]        # Ignore People
-MIN_AREA_PX = 400           # Detect small objects
-MAX_AREA_PX = 150000 
+# Motion Settings
+ACCEL = 0.3                 
+SPEED_FAST = 0.1            
+SPEED_SLOW = 0.05           
 
-# --- MOTION SETTINGS ---
-INSPECTION_HEIGHT = 0.08    # Low Z (8cm above floor)
-TILT_ANGLE_DEG = 25.0       # Tilt 25 degrees to look
+# Heights (Relative logic)
+TILT_Z_OFFSET = -0.05       # Drop 5cm from Start Height
+TILT_ANGLE_DEG = 45         # Pitch down 45 degrees
 
-def init_camera():
+# Vision Settings
+THRESHOLD_VAL = 180         # White > 180
+
+def init_camera_simple():
+    """
+    Exact copy of the working init from test_yolo_follow.py
+    No fancy resets, just connect and force MJPG.
+    """
+    print(f"[Vision] Connecting to Camera {CAMERA_INDEX}...")
     cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_MSMF)
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG')) # type: ignore
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    return cap
+    
+    if cap.isOpened():
+        # Force MJPG
+        try:
+            fourcc = cv2.VideoWriter.fourcc(*'MJPG') # type: ignore
+        except AttributeError:
+            fourcc = cv2.VideoWriter_fourcc(*'MJPG') # type: ignore
+            
+        cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        return cap
+    return None
 
-def calculate_inspection_pose(current_pose_vec, target_xyz, tilt_deg):
-    """
-    Calculates a target pose that is at target_xyz but TILTED relative to current tool.
-    """
-    r_curr = R.from_rotvec(current_pose_vec[3:])
-    mat_curr = r_curr.as_matrix()
+def detect_white_object(frame):
+    """Returns (u, v, angle) of the largest white blob."""
+    # Safety Check
+    if frame is None or frame.size == 0:
+        return None, frame
 
-    # Tilt around Tool X (Pitch)
-    r_rel = R.from_euler('x', tilt_deg, degrees=True) 
-    mat_rel = r_rel.as_matrix()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, THRESHOLD_VAL, 255, cv2.THRESH_BINARY)
+    
+    # Clean noise
+    mask = cv2.erode(mask, None, iterations=2) # type: ignore
+    mask = cv2.dilate(mask, None, iterations=2) # type: ignore
+    
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    output_frame = frame.copy()
+    
+    if contours:
+        c = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(c) > 500: # Min area filter
+            rect = cv2.minAreaRect(c)
+            (center_u, center_v), _, angle = rect
+            
+            # Draw UI
+            box = cv2.boxPoints(rect)
+            box = np.int0(box) # type: ignore
+            cv2.drawContours(output_frame, [box], 0, (0, 255, 0), 2) # type: ignore
+            cv2.circle(output_frame, (int(center_u), int(center_v)), 5, (0, 0, 255), -1) # type: ignore
+            cv2.putText(output_frame, f"TGT: {int(center_u)},{int(center_v)}", 
+                       (int(center_u)+10, int(center_v)), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2) # type: ignore
+            
+            return (center_u, center_v, angle), output_frame
+            
+    return None, output_frame
 
-    mat_new = mat_curr @ mat_rel
-    r_new = R.from_matrix(mat_new)
-    rot_vec_new = r_new.as_rotvec()
-
-    return list(target_xyz) + list(rot_vec_new)
+def fmt_pose(x, y, z, rx, ry, rz):
+    return f"p[{x:.4f}, {y:.4f}, {z:.4f}, {rx:.4f}, {ry:.4f}, {rz:.4f}]"
 
 def main():
-    print("--- RoboFab Automatic Inspection (Benchy Mode) ---")
+    print("--- RoboFab Manual-Entry Object Approach ---")
     
-    bot = URRobot(ROBOT_IP)
-    spatial = SpatialManager()
+    # 1. Setup Camera (Simple Method)
+    cap = init_camera_simple()
+    if cap is None or not cap.isOpened():
+        print("❌ Camera Failed.")
+        return
+    
     eye = EyeInHand()
-    model = YOLO('yolov8n.pt') 
-    
-    if not bot.connect(): return
-    if not spatial.cage_active: return
 
-    cap = init_camera()
-    if not cap.isOpened(): return
+    # 2. Setup Robot Reader
+    bot_reader = URRobot(ROBOT_IP)
+    if not bot_reader.connect(): return
 
-    entry_pose = spatial.get_entry_pose()
-    if entry_pose is None: return
-
-    print("✅ Moving to SEARCH POSE...")
-    bot.move_l(entry_pose, speed=0.25)
-    while bot.is_moving(): time.sleep(0.1)
-
-    state = "SEARCHING"
-    detection_start_time = None
-    target_inspect_pose = None
+    # 3. Setup Robot Commander
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(2)
+    try: sock.connect((ROBOT_IP, PORT_CMD))
+    except: print("❌ Socket Failed"); return
 
     try:
+        # --- PHASE 1: MONITOR & CAPTURE ---
+        print("\n" + "="*50)
+        print("👉 PHASE 1: LIVE MONITOR")
+        print("1. Manually jog robot so Camera is LEVEL and sees the object.")
+        print("2. This position will be the SAFE HOME.")
+        print("3. Press 'SPACE' to Lock Target & Proceed.")
+        print("   Press 'q' to Quit.")
+        print("="*50)
+
+        start_pose = None
+        target_u, target_v = None, None
+        
         while True:
             ret, frame = cap.read()
-            if not ret: break
             
-            results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD)
-            
-            valid_detections = []
-            
-            for r in results:
-                for box in r.boxes:
-                    cls_id = int(box.cls[0])
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    area = (x2 - x1) * (y2 - y1)
-                    
-                    # Simple Filter: No People, correct size
-                    if cls_id not in IGNORE_CLASSES and MIN_AREA_PX < area < MAX_AREA_PX:
-                        valid_detections.append((box, area, cls_id))
-            
-            # Sort by largest area
-            valid_detections.sort(key=lambda x: x[1], reverse=True)
-            
-            # --- STATE MACHINE ---
-            if state == "SEARCHING":
-                current_pose = bot.get_tcp_pose()
-                
-                if len(valid_detections) > 0:
-                    target_box, _, cls_id = valid_detections[0]
-                    name = model.names[cls_id]
-                    
-                    # Visualization
-                    x1, y1, x2, y2 = target_box.xyxy[0].cpu().numpy()
-                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                    cv2.putText(frame, f"{name}", (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+            # Skip empty frames (Don't crash)
+            if not ret or frame is None:
+                time.sleep(0.01)
+                continue
 
-                    if detection_start_time is None: detection_start_time = time.time()
-                    elapsed = time.time() - detection_start_time
-                    cv2.putText(frame, f"Lock: {elapsed:.1f}/{STABILITY_TIME}s", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            # Detect
+            det_result, vis_frame = detect_white_object(frame)
+            
+            # UI
+            if det_result:
+                target_u, target_v, _ = det_result
+                cv2.putText(vis_frame, "LOCKED - READY", (30, 30), # type: ignore
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            else:
+                cv2.putText(vis_frame, "SEARCHING...", (30, 30), # type: ignore
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-                    if elapsed >= STABILITY_TIME:
-                        print(f"\n🔒 Locked on {name}! Calculating Swoop Path...")
-                        
-                        box_data = target_box.xywh[0].cpu().numpy()
-                        r_x, r_y = eye.pixel_to_robot(box_data[0], box_data[1], current_pose)
-                        
-                        safe_floor_z = spatial.cage['z'][0]
-                        target_z = safe_floor_z + INSPECTION_HEIGHT
-                        
-                        # Clamp and Calculate Tilted Pose
-                        safe_xyz = spatial.clamp_target(current_pose, [r_x-current_pose[0], r_y-current_pose[1], target_z-current_pose[2]])
-                        target_inspect_pose = calculate_inspection_pose(current_pose, safe_xyz, tilt_deg=TILT_ANGLE_DEG)
-                        
-                        state = "INSPECTING"
+            cv2.imshow("Live Feed", vis_frame) # type: ignore
+            
+            key = cv2.waitKey(10) & 0xFF
+            if key == ord(' '):
+                if target_u is not None:
+                    # CAPTURE POSE NOW
+                    start_pose = bot_reader.get_tcp_pose()
+                    if start_pose:
+                        print(f"✅ Target Locked: ({target_u}, {target_v})")
+                        print(f"✅ Safe Home Captured: {start_pose[:3]}")
+                        break
+                    else:
+                        print("❌ Failed to read robot pose!")
                 else:
-                    detection_start_time = None
-                    cv2.putText(frame, "SCANNING...", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    print("❌ No object visible!")
+            elif key == ord('q'):
+                return
 
-            elif state == "INSPECTING":
-                print("\n🚀 Swooping to Inspect...")
-                # Smooth interpolated move (Position + Tilt)
-                bot.move_l(target_inspect_pose, speed=0.12, acceleration=0.2)
-                while bot.is_moving(): time.sleep(0.1)
-                
-                print("📸 View Captured.")
-                time.sleep(2.0) 
-                state = "HOLDING"
+        # --- PHASE 2: CALCULATE ---
+        print("\n👉 PHASE 2: CALCULATION")
+        # Calc World Target
+        tx, ty = eye.pixel_to_robot(target_u, target_v, start_pose)
+        print(f"   🎯 World Target: X={tx:.4f}, Y={ty:.4f}")
+        
+        # Calc Tilt Rotation (Pitch Down relative to current)
+        current_rot_vec = start_pose[3:6]
+        r_curr = R.from_rotvec(current_rot_vec)
+        
+        # Apply 45 deg tilt around X-axis (Camera pitch)
+        tilt_delta = R.from_euler('x', TILT_ANGLE_DEG, degrees=True)
+        r_new = r_curr * tilt_delta 
+        tilt_rot_vec = r_new.as_rotvec().tolist()
+        
+        safe_z = start_pose[2]
+        tilt_z = safe_z + TILT_Z_OFFSET
 
-            elif state == "HOLDING":
-                cv2.putText(frame, "HOLDING - REMOVE OBJECT", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
-                if len(valid_detections) == 0:
-                    print("\n🧹 Object Removed. Retreating...")
-                    time.sleep(0.5)
-                    bot.move_l(entry_pose, speed=0.25)
-                    while bot.is_moving(): time.sleep(0.1)
-                    state = "SEARCHING"
-                    detection_start_time = None
+        # --- PHASE 3: LINEAR APPROACH ---
+        print("\n👉 PHASE 3: EXECUTION")
+        script = "def approach_sequence():\n"
+        
+        # 1. Align X/Y (Maintain Height & Rotation)
+        script += f"  movel({fmt_pose(tx, ty, safe_z, *current_rot_vec)}, a={ACCEL}, v={SPEED_FAST})\n"
+        
+        # 2. Descend (Maintain Rotation) -> Object disappears
+        script += f"  movel({fmt_pose(tx, ty, tilt_z, *current_rot_vec)}, a={ACCEL}, v={SPEED_FAST})\n"
+        
+        # 3. Tilt (Twist Wrist) -> Object reappears
+        script += f"  movel({fmt_pose(tx, ty, tilt_z, *tilt_rot_vec)}, a={ACCEL}, v={SPEED_SLOW})\n"
+        
+        script += "end\n"
+        script += "approach_sequence()\n"
+        
+        print("🚀 Sending Command...")
+        sock.sendall(script.encode())
+        
+        # Wait + Buffer
+        time.sleep(6.0)
 
-            cv2.imshow("RoboFab Automatic", frame)
-            if cv2.waitKey(1) == ord('q'): break
+        # --- PHASE 4: VERIFY ---
+        print("\n👉 PHASE 4: VERIFY")
+        # Flush Buffer
+        for _ in range(5): cap.read()
 
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            res, final_frame = detect_white_object(frame)
+            cv2.imshow("Live Feed", final_frame) # type: ignore
+            cv2.waitKey(3000)
+            
+            if res:
+                print("✅ SUCCESS: Object re-acquired after tilt!")
+            else:
+                print("⚠️ FAIL: Object not seen. Adjust TILT_ANGLE_DEG or TILT_Z_OFFSET.")
+        else:
+            print("❌ Camera read failed during verification.")
+        
     except KeyboardInterrupt:
-        print("Stopping...")
+        print("\nAborted.")
+        sock.sendall(b"stopj(2.0)\n")
+    
     finally:
-        bot.stop()
-        bot.disconnect()
-        cap.release()
+        sock.close()
+        bot_reader.disconnect()
+        if cap: cap.release()
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
