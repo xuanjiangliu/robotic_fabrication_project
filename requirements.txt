@@ -9,3 +9,4 @@ scipy
 opencv-python
 mediapipe
 flask
+ultralytics

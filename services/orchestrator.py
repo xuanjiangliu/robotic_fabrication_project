@@ -7,8 +7,8 @@ import requests
 # Setup Import Paths
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# REAL DRIVERS ONLY
-from pkg.drivers.ur_rtde_wrapper import URRobot
+# --- CHANGED: Import the Trigger Client, NOT the Motion Wrapper ---
+from pkg.drivers.robotiq_v2 import RTDETriggerClient
 from pkg.drivers.sv08_moonraker import MoonrakerClient
 
 # --- CONFIGURATION ---
@@ -16,50 +16,12 @@ ROBOT_IP = "192.168.50.82"
 PRINTER_IP = "192.168.50.231"
 API_URL = "http://127.0.0.1:5000/api"
 
-# --- WAYPOINTS ---
-HOME_JOINTS = [-1.49171, -2.06804, -1.98381, -2.23716, -1.48927, -3.16102]
-PRE_GRASP_JOINTS = [-1.48798, -2.28912, -1.55682, -2.58710, -1.55443, -3.16062]
-GRASP_POSE_L = [-0.05414, -0.89501, 0.01759, -0.01788, 2.56380, -1.73551]
-EXIT_JOINTS = [-1.47797, -2.05317, -1.92593, -2.38268, -1.49959, -3.08864]
-DROP_JOINTS = [-2.02408, -2.05317, -1.93757, -3.03030, -1.17494, -2.56292]
+# Tuning: How long to wait for the robot to finish the physical harvest?
+# (This blocks Python so it doesn't try to start the next print too early)
+HARVEST_DURATION_SEC = 10
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [Orchestrator] - %(message)s')
 logger = logging.getLogger()
-
-def run_harvest_sequence(bot, speed_factor=1.0):
-    """
-    Executes harvest. 
-    Applies 'speed_factor' (0.1 to 1.0) to all moves for safety override.
-    """
-    logger.info(f"--- STARTING HARVEST (Speed: {speed_factor*100:.0f}%) ---")
-
-    def safe_speed(nominal_speed):
-        return nominal_speed * speed_factor
-
-    # A. Approach
-    bot.gripper_open()
-    bot.move_j(PRE_GRASP_JOINTS, speed=safe_speed(0.8))
-    bot.move_l(GRASP_POSE_L, speed=safe_speed(0.1))
-    
-    # B. Grab
-    logger.info("Gripping...")
-    bot.gripper_close()
-    time.sleep(1.5)
-
-    # C. Detach
-    LIFT_POSE = list(GRASP_POSE_L)
-    LIFT_POSE[2] += 0.05 
-    bot.move_l(LIFT_POSE, speed=safe_speed(0.05))
-    
-    # D. Exit & Drop
-    bot.move_j(EXIT_JOINTS, speed=safe_speed(0.6))
-    bot.move_j(DROP_JOINTS, speed=safe_speed(1.0))
-    bot.gripper_open()
-    time.sleep(1.5)
-
-    # E. Reset
-    bot.move_j(HOME_JOINTS, speed=safe_speed(0.8))
-    logger.info("Harvest Complete.")
 
 def report_status(robot_state, printer_state, temp=0.0, progress=0.0, console=[]):
     """Helper to push telemetry to Dashboard."""
@@ -75,33 +37,41 @@ def report_status(robot_state, printer_state, temp=0.0, progress=0.0, console=[]
         pass # Don't crash if Dashboard is reloading
 
 def main():
-    logger.info("Initializing Active Orchestrator (Hardware Mode)...")
+    logger.info("Initializing Orchestrator (Listener Mode)...")
     logger.info(f"Targeting Robot: {ROBOT_IP} | Printer: {PRINTER_IP}")
 
-    bot = URRobot(ROBOT_IP)
+    # 1. Initialize Clients
+    trigger = RTDETriggerClient(ROBOT_IP)
     printer = MoonrakerClient(PRINTER_IP)
 
-    if not bot.connect():
-        logger.error("Robot Connection Failed.")
+    # 2. Establish Connection to Robot's Nervous System
+    if not trigger.connect():
+        logger.error("❌ Robot Trigger Connection Failed. Check IP.")
         return
-
-    # Home Robot
-    bot.move_j(HOME_JOINTS, speed=0.5)
+    
+    # 3. Safety Check: Is the Tablet Program actually running?
+    if not trigger.is_program_running():
+        logger.warning("⚠️  Robot Program is NOT running.")
+        logger.warning("    Action: Go to Tablet -> Load Program -> Press Play.")
+        # We continue anyway, hoping the user starts it before the first harvest.
 
     while True:
         try:
-            # 1. IDLE LOOP & TELEMETRY
+            # --- PHASE 1: IDLE MONITORING ---
             p_status = printer.get_status()
             p_temp = printer.get_bed_temperature()
             
-            # Fetch Console Logs (Safely Check if method exists on Real Driver)
+            # Fetch Console Logs
             p_console = []
             if hasattr(printer, 'get_console_lines'):
                 p_console = printer.get_console_lines(limit=8)
             
-            report_status("Idle", p_status, p_temp, 0.0, p_console)
+            # Check Robot Health (Just boolean check for now)
+            r_status = "Ready" if trigger.is_program_running() else "Halted"
+            
+            report_status(r_status, p_status, p_temp, 0.0, p_console)
 
-            # 2. POLL FOR WORK
+            # --- PHASE 2: POLL FOR WORK ---
             try:
                 resp = requests.get(f"{API_URL}/jobs/next", timeout=2)
             except requests.exceptions.ConnectionError:
@@ -110,22 +80,22 @@ def main():
                 continue
             
             if resp.status_code == 204:
-                # No work
+                # No work in queue
                 time.sleep(2)
                 continue
             
-            # 3. JOB RECEIVED
+            # --- PHASE 3: JOB STARTED ---
             payload = resp.json()
             job = payload['job']
             settings = payload['settings']
             
             logger.info(f"📥 Received Job: {job['id']}")
-            logger.info(f"⚙️ Applying Settings: Temp={settings['bed_temp']}C, Speed={settings['speed']}")
+            logger.info(f"⚙️ Settings: Temp={settings['bed_temp']}C, Auto-Harvest={settings['auto_harvest']}")
 
-            # 4. UPLOAD & PRINT
-            report_status("Working", "Uploading", p_temp, 0.0, p_console)
-            
+            # Upload & Start Print
+            report_status(r_status, "Uploading", p_temp, 0.0, p_console)
             filename = f"job_{job['id']}.gcode"
+            
             if not printer.upload_gcode(job['gcode'], filename):
                 logger.error("Upload failed.")
                 continue 
@@ -134,7 +104,7 @@ def main():
                 logger.error("Print start failed.")
                 continue
 
-            # 5. MONITOR PRINT
+            # --- PHASE 4: PRINTING LOOP ---
             while True:
                 p_status = printer.get_status()
                 p_temp = printer.get_bed_temperature()
@@ -142,7 +112,7 @@ def main():
                 if hasattr(printer, 'get_console_lines'):
                     p_console = printer.get_console_lines(limit=8)
                 
-                report_status("Waiting (Print)", p_status, p_temp, p_prog, p_console)
+                report_status(r_status, p_status, p_temp, p_prog, p_console)
                 
                 if p_status == "complete":
                     break
@@ -154,35 +124,51 @@ def main():
             if p_status != "complete":
                 continue 
 
-            # 6. COOLDOWN
+            # --- PHASE 5: COOLDOWN ---
             target_temp = settings['bed_temp']
             logger.info(f"Cooling down to {target_temp:.1f}C...")
             
             while True:
                 curr_temp = printer.get_bed_temperature()
-                report_status("Waiting (Cool)", "Cooling", curr_temp, 1.0, p_console)
+                report_status(r_status, "Cooling", curr_temp, 1.0, p_console)
                 
                 if curr_temp <= target_temp:
                     break
                 time.sleep(5)
 
-            # 7. HARVEST
+            # --- PHASE 6: THE HANDSHAKE (HARVEST) ---
             if settings['auto_harvest']:
+                logger.info("🤖 Initiating Harvest Sequence...")
                 report_status("Harvesting", "Complete", curr_temp, 1.0, p_console)
-                run_harvest_sequence(bot, speed_factor=settings['speed'])
+                
+                # A. Verify Link
+                if trigger.is_program_running():
+                    # B. Pull the Trigger
+                    if trigger.trigger_cycle():
+                        logger.info("✅ Signal Sent (Reg 18 -> 1).")
+                        logger.info(f"⏳ Waiting {HARVEST_DURATION_SEC}s for robot execution...")
+                        
+                        # C. Wait for Physical Action
+                        # (The robot is now moving autonomously)
+                        time.sleep(HARVEST_DURATION_SEC)
+                        
+                        logger.info("✅ Harvest Time Elapsed.")
+                    else:
+                        logger.error("❌ Failed to send trigger signal.")
+                else:
+                    logger.error("❌ Robot is NOT running. Cannot Harvest.")
             else:
-                logger.info("⚠️ Auto-Harvest Disabled.")
+                logger.info("⚠️ Auto-Harvest Disabled by Job Settings.")
 
-            # 8. REPORT COMPLETE
+            # --- PHASE 7: FINISH ---
             requests.post(f"{API_URL}/jobs/{job['id']}/complete", json={"result": "success"})
             
-            # 9. CLEANUP
+            # Cleanup Printer Motors
             printer.execute_gcode("M84") 
 
         except KeyboardInterrupt:
-            logger.info("Stopping...")
-            bot.stop()
-            bot.disconnect()
+            logger.info("Stopping Orchestrator...")
+            trigger.disconnect()
             break
         except Exception as e:
             logger.error(f"Loop Error: {e}")
