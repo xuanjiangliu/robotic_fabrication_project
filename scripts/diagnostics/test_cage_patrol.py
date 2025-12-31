@@ -1,110 +1,141 @@
 import sys
 import os
-import time
 import json
-import logging
-
-# Setup Import Paths
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from pkg.drivers.ur_rtde_wrapper import URRobot
+import time
+import socket
 
 # --- CONFIGURATION ---
 ROBOT_IP = "192.168.50.82"
-CAGE_FILE = os.path.join(os.path.dirname(__file__), '../config/printer_cage.json')
-PATROL_SPEED = 0.15   # Meters/sec (Safe/Slow)
-PATROL_ACCEL = 0.3
+PORT = 30002
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), '../../config/printer_cage.json')
 
-# Logging Setup
-logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
-logger = logging.getLogger("CagePatrol")
+# Speeds
+SPEED_J = 0.5    # rad/s (Approach speed - Fast)
+ACCEL_J = 0.5    # rad/s^2
+SPEED_L = 0.05   # m/s (Cage Patrol Speed - SLOW)
+ACCEL_L = 0.1    # m/s^2
 
-def test_patrol():
-    logger.info("--- RoboFab 8-Point Cage Verification ---")
+def load_cage_config(path):
+    if not os.path.exists(path):
+        print(f"❌ Config file {path} not found!")
+        sys.exit(1)
+    with open(path, 'r') as f:
+        return json.load(f)
+
+def fmt_pose(p):
+    """Formats a list [x,y,z,rx,ry,rz] into a URScript pose string p[x,y,z,...]"""
+    # Ensure we use exactly 6 decimals for precision
+    return f"p[{p[0]:.6f}, {p[1]:.6f}, {p[2]:.6f}, {p[3]:.6f}, {p[4]:.6f}, {p[5]:.6f}]"
+
+def main():
+    print("--- RoboFab Cage Patrol (Socket / PolyScope X) ---")
     
-    # 1. Load the JSON Data
-    if not os.path.exists(CAGE_FILE):
-        logger.error(f"❌ Cage file not found: {CAGE_FILE}")
-        logger.error("Run 'teach_cage_interactive.py' first!")
-        return
-
-    with open(CAGE_FILE, 'r') as f:
-        cage_data = json.load(f)
-
-    # Validate Entry Pose
-    if "entry_pose" not in cage_data:
-        logger.error("❌ 'entry_pose' missing from config.")
-        return
+    # 1. Load Config
+    cage = load_cage_config(CONFIG_FILE)
+    try:
+        x_min, x_max = cage['x_min'], cage['x_max']
+        y_min, y_max = cage['y_min'], cage['y_max']
+        z_min, z_max = cage['z_min'], cage['z_max']
+        entry_pose = cage['entry_pose']
         
-    entry_pose = cage_data["entry_pose"]
+        # Use Entry Rotation for stability (Elbow Up)
+        fixed_rot = entry_pose[3:6] 
+    except KeyError as e:
+        print(f"❌ Malformed config: Missing {e}")
+        return
 
-    # Define the patrol sequence (Order ensures a clean box path)
-    # We trace the Bottom perimeter -> Move Up -> Trace Top perimeter
-    sequence_keys = [
-        "corner_bottom_left_front",
-        "corner_bottom_right_front",
-        "corner_bottom_right_back",
-        "corner_bottom_left_back",
-        "corner_top_left_back",     # Lift up at the back
-        "corner_top_right_back",
-        "corner_top_right_front",
-        "corner_top_left_front"
+    # 2. Define Waypoints 
+    # Logic: Based on your logs, X_MIN = Left, Y_MAX = Front (Door)
+    
+    # START: Bottom Left Front (Door)
+    start_corner = [x_min, y_max, z_min] + fixed_rot
+    
+    waypoints = [
+        # --- Bottom Loop ---
+        ("Bottom Left (Start)",  [x_min, y_max, z_min] + fixed_rot),
+        ("Bottom Right (Door)",  [x_max, y_max, z_min] + fixed_rot),
+        ("Bottom Right (Back)",  [x_max, y_min, z_min] + fixed_rot),
+        ("Bottom Left (Back)",   [x_min, y_min, z_min] + fixed_rot),
+        ("Bottom Left (Close)",  [x_min, y_max, z_min] + fixed_rot),
+        
+        # --- Move Up ---
+        ("Top Left (Door)",      [x_min, y_max, z_max] + fixed_rot),
+        
+        # --- Top Loop ---
+        ("Top Right (Door)",     [x_max, y_max, z_max] + fixed_rot),
+        ("Top Right (Back)",     [x_max, y_min, z_max] + fixed_rot),
+        ("Top Left (Back)",      [x_min, y_min, z_max] + fixed_rot),
+        ("Top Left (Close)",     [x_min, y_max, z_max] + fixed_rot),
     ]
 
-    # 2. Connect to Robot
-    logger.info(f"Connecting to Robot at {ROBOT_IP}...")
-    bot = URRobot(ROBOT_IP)
-    if not bot.connect():
-        logger.error("❌ Connection Failed.")
-        return
+    # 3. Construct URScript
+    # We send a single function to guarantee smooth execution without socket lag
+    script = "def cage_patrol_seq():\n"
+    
+    # A. Move to Entry (Joint Move)
+    script += f"  textmsg(\"Approaching Entry...\")\n"
+    script += f"  movej({fmt_pose(entry_pose)}, a={ACCEL_J}, v={SPEED_J})\n"
+    script += f"  sleep(0.5)\n"
+    
+    # B. Move to Start Corner (Linear)
+    script += f"  textmsg(\"Moving to Start Corner...\")\n"
+    script += f"  movel({fmt_pose(start_corner)}, a={ACCEL_L}, v={SPEED_L})\n"
+    script += f"  sleep(0.5)\n"
 
+    # C. Execute Patrol
+    script += f"  textmsg(\"Starting Patrol...\")\n"
+    for name, pt in waypoints:
+        # Note: We don't send 'name' to robot, just pose
+        script += f"  movel({fmt_pose(pt)}, a={ACCEL_L}, v={SPEED_L})\n"
+    
+    # D. Return to Entry
+    script += f"  textmsg(\"Returning to Entry...\")\n"
+    script += f"  movel({fmt_pose(entry_pose)}, a={ACCEL_L}, v={SPEED_L})\n"
+    script += "end\n"
+    
+    # Run the function
+    script += "cage_patrol_seq()\n"
+
+    # 4. Send to Robot
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(2)
+    
     try:
-        print("\n" + "="*50)
-        print("🚀 STARTING 8-POINT PATROL")
-        print("⚠️  Ensure the robot is manually jogged 'NEAR' the Entry Pose first.")
-        print("   (This prevents configuration flips during the first approach)")
-        print("="*50)
+        print(f"Connecting to {ROBOT_IP}:{PORT}...")
+        s.connect((ROBOT_IP, PORT))
+        print("✅ Connected.")
         
-        # 3. Move to Entry Pose
-        logger.info(f"📍 Moving to ENTRY POSE...")
-        # We use move_l to strictly enforce the linear path to entry
-        bot.move_l(entry_pose, speed=PATROL_SPEED, acceleration=PATROL_ACCEL)
-        
-        while bot.is_moving(): time.sleep(0.1)
-        time.sleep(1.0)
+        print("\n⚠️  WARNING: Robot will move AUTOMATICALLY.")
+        print(f"    Sequence: Entry -> Bottom Left (Door) -> Loop -> Top -> Loop -> Entry")
+        print("\n👉 Press Ctrl+C at ANY TIME to STOP immediately.")
+        input("👉 PRESS ENTER TO START PATROL...")
 
-        # 4. Execute Patrol
-        for key in sequence_keys:
-            if key not in cage_data:
-                logger.warning(f"⚠️  Skipping missing key: {key}")
-                continue
-                
-            target = cage_data[key]
-            logger.info(f"📍 Moving to: {key}")
-            
-            # Execute Linear Move
-            bot.move_l(target, speed=PATROL_SPEED, acceleration=PATROL_ACCEL)
-            
-            # Wait for completion
-            time.sleep(0.1) # Buffer
-            while bot.is_moving():
-                time.sleep(0.1)
-            time.sleep(0.5) # Short pause at corner
+        # Send
+        s.sendall(script.encode('utf-8'))
+        print("🚀 Script Sent! Robot moving...")
 
-        # 5. Return to Entry
-        logger.info(f"📍 Returning to ENTRY POSE...")
-        bot.move_l(entry_pose, speed=PATROL_SPEED, acceleration=PATROL_ACCEL)
-        while bot.is_moving(): time.sleep(0.1)
-
-        logger.info("✅ Patrol Complete. All 8 corners are verified reachable.")
+        # Monitor (Keep script alive for StopJ capability)
+        start_time = time.time()
+        while True:
+            elapsed = time.time() - start_time
+            sys.stdout.write(f"\r⏳ Running... ({elapsed:.1f}s) | Press Ctrl+C to STOP")
+            sys.stdout.flush()
+            time.sleep(0.5)
 
     except KeyboardInterrupt:
-        logger.warning("\n🛑 Patrol Aborted by User.")
-        bot.stop()
+        print("\n\n🛑 STOPPING ROBOT (Ctrl+C Detected)!")
+        try:
+            # Immediate Stop
+            s.sendall(b"stopj(2.0)\n")
+            print("✅ Stop command sent.")
+        except:
+            print("❌ Failed to send stop.")
+            
     except Exception as e:
-        logger.error(f"❌ Error during patrol: {e}")
-        bot.stop()
+        print(f"\n❌ Socket Error: {e}")
     finally:
-        bot.disconnect()
+        s.close()
+        print("\nSocket closed.")
 
 if __name__ == "__main__":
-    test_patrol()
+    main()
