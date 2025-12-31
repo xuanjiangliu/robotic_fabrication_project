@@ -13,219 +13,236 @@ from pkg.vision.eye_in_hand import EyeInHand
 
 # --- CONFIGURATION ---
 ROBOT_IP = "192.168.50.82"
-PORT_CMD = 30002            # Port for sending commands
-CAMERA_INDEX = 1            # Orbbec RGB
+PORT_CMD = 30002            
+CAMERA_INDEX = 1            
 
-# Motion Settings
-ACCEL = 0.3                 
-SPEED_FAST = 0.1            
-SPEED_SLOW = 0.05           
+# Heights (Meters)
+SEARCH_Z = 0.35             
+HOVER_Z = 0.15              
+GRAB_Z = 0.05               
+TILT_ANGLE_DEG = 45         
 
-# Heights (Relative logic)
-TILT_Z_OFFSET = -0.05       # Drop 5cm from Start Height
-TILT_ANGLE_DEG = 45         # Pitch down 45 degrees
+# Vision Tuning
+WHITE_THRESHOLD = 160       # Lowered slightly to catch the Benchy better
+MIN_AREA = 500              # Ignore small specks
+MAX_AREA = 50000            # Ignore massive blobs (like walls)
 
-# Vision Settings
-THRESHOLD_VAL = 180         # White > 180
-
-def init_camera_simple():
-    """
-    Exact copy of the working init from test_yolo_follow.py
-    No fancy resets, just connect and force MJPG.
-    """
+def init_camera_robust():
+    """Forces MJPG to avoid Windows USB bandwidth issues."""
     print(f"[Vision] Connecting to Camera {CAMERA_INDEX}...")
     cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_MSMF)
     
+    # Simple Warmup loop
     if cap.isOpened():
-        # Force MJPG
         try:
-            fourcc = cv2.VideoWriter.fourcc(*'MJPG') # type: ignore
+            fourcc = cv2.VideoWriter_fourcc(*'MJPG') # type: ignore
         except AttributeError:
             fourcc = cv2.VideoWriter_fourcc(*'MJPG') # type: ignore
-            
         cap.set(cv2.CAP_PROP_FOURCC, fourcc)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        
+        # Warmup Frames
+        for _ in range(10):
+            cap.read()
         return cap
     return None
 
-def detect_white_object(frame):
-    """Returns (u, v, angle) of the largest white blob."""
-    # Safety Check
-    if frame is None or frame.size == 0:
-        return None, frame
+def detect_object(frame):
+    """
+    Finds the largest white blob, BUT applies a mask to ignore window glare.
+    Returns: (u, v, angle, annotated_frame)
+    """
+    h, w = frame.shape[:2]
+    
+    # --- STEP 1: DEFINE REGION OF INTEREST (ROI) ---
+    # Based on your image, we want to ignore the Top ~30% and maybe extreme edges
+    mask_roi = np.zeros((h, w), dtype=np.uint8)
+    
+    # ROI: Start at Y=200 (skip top), End at Y=720 (bottom)
+    #      Start at X=200 (skip left wall), End at X=1080 (skip right arm)
+    cv2.rectangle(mask_roi, (200, 200), (1080, 720), 255, -1)
 
+    # --- STEP 2: THRESHOLDING ---
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, THRESHOLD_VAL, 255, cv2.THRESH_BINARY)
+    _, binary = cv2.threshold(gray, WHITE_THRESHOLD, 255, cv2.THRESH_BINARY)
     
+    # Apply the ROI Mask (Logical AND) - Everything outside ROI becomes Black
+    binary = cv2.bitwise_and(binary, binary, mask=mask_roi)
+
     # Clean noise
-    mask = cv2.erode(mask, None, iterations=2) # type: ignore
-    mask = cv2.dilate(mask, None, iterations=2) # type: ignore
+    binary = cv2.erode(binary, None, iterations=2) # type: ignore
+    binary = cv2.dilate(binary, None, iterations=2) # type: ignore
     
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    output_frame = frame.copy()
+    vis_frame = frame.copy()
+    
+    # Draw ROI Box for debugging (Yellow Box)
+    cv2.rectangle(vis_frame, (200, 200), (1080, 720), (0, 255, 255), 2)
     
     if contours:
-        c = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(c) > 500: # Min area filter
-            rect = cv2.minAreaRect(c)
-            (center_u, center_v), _, angle = rect
+        # Sort by area large to small
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        
+        for c in contours:
+            area = cv2.contourArea(c)
             
-            # Draw UI
-            box = cv2.boxPoints(rect)
-            box = np.int0(box) # type: ignore
-            cv2.drawContours(output_frame, [box], 0, (0, 255, 0), 2) # type: ignore
-            cv2.circle(output_frame, (int(center_u), int(center_v)), 5, (0, 0, 255), -1) # type: ignore
-            cv2.putText(output_frame, f"TGT: {int(center_u)},{int(center_v)}", 
-                       (int(center_u)+10, int(center_v)), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2) # type: ignore
+            # Filter by Size (Ignore tiny noise OR massive walls if they sneak in)
+            if MIN_AREA < area < MAX_AREA:
+                # Calculate Centroid
+                M = cv2.moments(c)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    
+                    # Draw Success Visuals
+                    cv2.drawContours(vis_frame, [c], -1, (0, 255, 0), 2)
+                    cv2.circle(vis_frame, (cx, cy), 7, (0, 0, 255), -1)
+                    cv2.putText(vis_frame, f"TGT: {cx},{cy}", (cx+10, cy), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    return cx, cy, 0, vis_frame
             
-            return (center_u, center_v, angle), output_frame
-            
-    return None, output_frame
+    return None, None, None, vis_frame
 
-def fmt_pose(x, y, z, rx, ry, rz):
-    return f"p[{x:.4f}, {y:.4f}, {z:.4f}, {rx:.4f}, {ry:.4f}, {rz:.4f}]"
+def fmt_pose(p):
+    return f"p[{p[0]:.4f}, {p[1]:.4f}, {p[2]:.4f}, {p[3]:.4f}, {p[4]:.4f}, {p[5]:.4f}]"
 
 def main():
-    print("--- RoboFab Manual-Entry Object Approach ---")
+    print("--- Open-Loop Approach / Closed-Loop Confirmation Test ---")
     
-    # 1. Setup Camera (Simple Method)
-    cap = init_camera_simple()
-    if cap is None or not cap.isOpened():
-        print("❌ Camera Failed.")
-        return
+    # 1. Init Hardware
+    cap = init_camera_robust()
+    if not cap: return
     
-    eye = EyeInHand()
-
-    # 2. Setup Robot Reader
     bot_reader = URRobot(ROBOT_IP)
     if not bot_reader.connect(): return
-
-    # 3. Setup Robot Commander
+    
+    eye = EyeInHand()
+    
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(2)
     try: sock.connect((ROBOT_IP, PORT_CMD))
     except: print("❌ Socket Failed"); return
 
     try:
-        # --- PHASE 1: MONITOR & CAPTURE ---
-        print("\n" + "="*50)
-        print("👉 PHASE 1: LIVE MONITOR")
-        print("1. Manually jog robot so Camera is LEVEL and sees the object.")
-        print("2. This position will be the SAFE HOME.")
-        print("3. Press 'SPACE' to Lock Target & Proceed.")
-        print("   Press 'q' to Quit.")
-        print("="*50)
-
-        start_pose = None
+        # --- PHASE 1: SEARCH ---
+        print("\n👉 PHASE 1: ACQUIRE TARGET")
+        print("   Look for the YELLOW BOX on screen.")
+        print("   Only objects INSIDE the box are detected.")
+        print("   Press 'SPACE' to Lock Target.")
+        
         target_u, target_v = None, None
+        search_pose = None
         
         while True:
             ret, frame = cap.read()
+            if not ret: continue
             
-            # Skip empty frames (Don't crash)
-            if not ret or frame is None:
-                time.sleep(0.01)
-                continue
-
-            # Detect
-            det_result, vis_frame = detect_white_object(frame)
+            u, v, _, vis = detect_object(frame)
             
-            # UI
-            if det_result:
-                target_u, target_v, _ = det_result
-                cv2.putText(vis_frame, "LOCKED - READY", (30, 30), # type: ignore
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            if u is not None:
+                cv2.putText(vis, "TARGET FOUND", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                target_u, target_v = u, v
             else:
-                cv2.putText(vis_frame, "SEARCHING...", (30, 30), # type: ignore
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
-            cv2.imshow("Live Feed", vis_frame) # type: ignore
+                cv2.putText(vis, "SEARCHING...", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             
-            key = cv2.waitKey(10) & 0xFF
+            cv2.imshow("Phase 1: Search", vis)
+            
+            key = cv2.waitKey(1) & 0xFF
             if key == ord(' '):
                 if target_u is not None:
-                    # CAPTURE POSE NOW
-                    start_pose = bot_reader.get_tcp_pose()
-                    if start_pose:
-                        print(f"✅ Target Locked: ({target_u}, {target_v})")
-                        print(f"✅ Safe Home Captured: {start_pose[:3]}")
+                    search_pose = bot_reader.get_tcp_pose()
+                    if search_pose:
+                        print(f"✅ LOCKED: ({target_u}, {target_v})")
                         break
                     else:
-                        print("❌ Failed to read robot pose!")
+                        print("❌ Failed to read robot pose! Check connection.")
                 else:
-                    print("❌ No object visible!")
+                    print("❌ No target visible.")
             elif key == ord('q'):
                 return
 
-        # --- PHASE 2: CALCULATE ---
-        print("\n👉 PHASE 2: CALCULATION")
-        # Calc World Target
-        tx, ty = eye.pixel_to_robot(target_u, target_v, start_pose)
-        print(f"   🎯 World Target: X={tx:.4f}, Y={ty:.4f}")
-        
-        # Calc Tilt Rotation (Pitch Down relative to current)
-        current_rot_vec = start_pose[3:6]
-        r_curr = R.from_rotvec(current_rot_vec)
-        
-        # Apply 45 deg tilt around X-axis (Camera pitch)
-        tilt_delta = R.from_euler('x', TILT_ANGLE_DEG, degrees=True)
-        r_new = r_curr * tilt_delta 
-        tilt_rot_vec = r_new.as_rotvec().tolist()
-        
-        safe_z = start_pose[2]
-        tilt_z = safe_z + TILT_Z_OFFSET
+        # Safety Check
+        if search_pose is None: return
 
-        # --- PHASE 3: LINEAR APPROACH ---
-        print("\n👉 PHASE 3: EXECUTION")
+        # --- PHASE 2: CALCULATE (OPEN LOOP PLAN) ---
+        print("\n👉 PHASE 2: CALCULATE & APPROACH")
+        
+        # 1. World XY
+        tx, ty = eye.pixel_to_robot(target_u, target_v, search_pose)
+        print(f"   World Target: X={tx:.4f}, Y={ty:.4f}")
+        
+        # 2. Rotations (Level vs Tilted)
+        current_rot = search_pose[3:6]
+        
+        # Calculate Tilt
+        r_curr = R.from_rotvec(current_rot)
+        tilt_delta = R.from_euler('x', TILT_ANGLE_DEG, degrees=True)
+        r_new = r_curr * tilt_delta
+        tilted_rot = r_new.as_rotvec().tolist()
+        
+        # 3. Construct Script
         script = "def approach_sequence():\n"
-        
-        # 1. Align X/Y (Maintain Height & Rotation)
-        script += f"  movel({fmt_pose(tx, ty, safe_z, *current_rot_vec)}, a={ACCEL}, v={SPEED_FAST})\n"
-        
-        # 2. Descend (Maintain Rotation) -> Object disappears
-        script += f"  movel({fmt_pose(tx, ty, tilt_z, *current_rot_vec)}, a={ACCEL}, v={SPEED_FAST})\n"
-        
-        # 3. Tilt (Twist Wrist) -> Object reappears
-        script += f"  movel({fmt_pose(tx, ty, tilt_z, *tilt_rot_vec)}, a={ACCEL}, v={SPEED_SLOW})\n"
-        
+        script += f"  textmsg(\"Moving to Hover...\")\n"
+        script += f"  movel({fmt_pose([tx, ty, HOVER_Z] + current_rot)}, a=0.3, v=0.1)\n"
+        script += f"  textmsg(\"Descending to Grab Height...\")\n"
+        script += f"  movel({fmt_pose([tx, ty, GRAB_Z] + current_rot)}, a=0.3, v=0.05)\n"
+        script += f"  textmsg(\"Tilting for Confirmation...\")\n"
+        script += f"  movel({fmt_pose([tx, ty, GRAB_Z] + tilted_rot)}, a=0.5, v=0.2)\n"
         script += "end\n"
         script += "approach_sequence()\n"
         
-        print("🚀 Sending Command...")
+        print("🚀 Executing Blind Approach Sequence...")
         sock.sendall(script.encode())
         
-        # Wait + Buffer
-        time.sleep(6.0)
-
-        # --- PHASE 4: VERIFY ---
-        print("\n👉 PHASE 4: VERIFY")
-        # Flush Buffer
-        for _ in range(5): cap.read()
-
-        ret, frame = cap.read()
-        if ret and frame is not None:
-            res, final_frame = detect_white_object(frame)
-            cv2.imshow("Live Feed", final_frame) # type: ignore
-            cv2.waitKey(3000)
-            
-            if res:
-                print("✅ SUCCESS: Object re-acquired after tilt!")
-            else:
-                print("⚠️ FAIL: Object not seen. Adjust TILT_ANGLE_DEG or TILT_Z_OFFSET.")
-        else:
-            print("❌ Camera read failed during verification.")
+        # Wait for motion (approx 8s)
+        time.sleep(8.0)
         
+        # --- PHASE 3: CLOSED LOOP VERIFICATION ---
+        print("\n👉 PHASE 3: VERIFY")
+        
+        # Flush buffer
+        for _ in range(5): cap.read()
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret: continue
+            
+            u, v, _, vis = detect_object(frame)
+            
+            h, w = frame.shape[:2]
+            cx, cy = w//2, h//2
+            cv2.line(vis, (cx-20, cy), (cx+20, cy), (255, 255, 0), 2)
+            cv2.line(vis, (cx, cy-20), (cx, cy+20), (255, 255, 0), 2)
+            
+            status = "FAIL"
+            color = (0, 0, 255)
+            
+            if u is not None:
+                # Distance from Center of Image
+                dist = np.sqrt((u-cx)**2 + (v-cy)**2)
+                if dist < 100: 
+                    status = "SUCCESS - GRAB READY"
+                    color = (0, 255, 0)
+                else:
+                    status = "OFFSET - CALIB DRIFT?"
+                    color = (0, 255, 255)
+            
+            cv2.putText(vis, f"STATUS: {status}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            cv2.imshow("Phase 3: Verification", vis)
+            
+            if cv2.waitKey(1) == ord('q'):
+                break
+
     except KeyboardInterrupt:
-        print("\nAborted.")
+        print("\nSTOPPING.")
         sock.sendall(b"stopj(2.0)\n")
-    
+        
     finally:
         sock.close()
         bot_reader.disconnect()
-        if cap: cap.release()
+        cap.release()
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
