@@ -11,7 +11,7 @@ class EyeInHand:
         # Default PPM (Hardware fallback if config missing)
         self.ppm = 2800.0 
         
-        # Center of 1280x720
+        # Center of 1280x720 (Update if using different resolution)
         self.img_center_x = 640 
         self.img_center_y = 360 
 
@@ -30,23 +30,21 @@ class EyeInHand:
             
             # 1. Load Hand-Eye Matrix
             mat = np.eye(4)
-            mat[0, 3] = data["translation_x"]
-            mat[1, 3] = data["translation_y"]
-            mat[2, 3] = data["translation_z"]
+            mat[0, 3] = data.get("translation_x", 0.0)
+            mat[1, 3] = data.get("translation_y", 0.0)
+            mat[2, 3] = data.get("translation_z", 0.0)
             
-            rot_mat = np.array(data["rotation_matrix"])
-            mat[:3, :3] = rot_mat
+            if "rotation_matrix" in data:
+                rot_mat = np.array(data["rotation_matrix"])
+                mat[:3, :3] = rot_mat
             
             self.matrix_cam2gripper = mat
             
             # 2. Load Scale (PPM)
             if "pixels_per_meter" in data:
                 self.ppm = float(data["pixels_per_meter"])
-                print(f"[EyeInHand] ✅ Loaded Scale: {self.ppm:.1f} PPM")
-            else:
-                print(f"[EyeInHand] ⚠️ 'pixels_per_meter' not in config. Using default {self.ppm}")
-
-            print(f"[EyeInHand] ✅ Loaded Offset: {mat[:3, 3]}")
+            
+            print(f"[EyeInHand] ✅ Loaded Calibration (Offset: {mat[:3, 3]})")
             
         except Exception as e:
             print(f"[EyeInHand] ❌ Error loading calibration: {e}")
@@ -54,10 +52,18 @@ class EyeInHand:
     def pixel_to_robot(self, u, v, robot_pose_vec):
         """
         Converts Pixel (u,v) -> Robot Base (x,y).
-        robot_pose_vec: [x, y, z, rx, ry, rz]
+        
+        Args:
+            u, v: Pixel coordinates from the camera.
+            robot_pose_vec: The current robot pose [x, y, z, rx, ry, rz] (Observation Pose).
+            
+        Returns:
+            (target_x, target_y) in Robot Base Frame.
         """
         # 1. Convert Pixel -> Camera Frame (Meters)
         # We assume the camera is looking 'down' Z-axis.
+        # Note: Directions (neg/pos) depend on camera mounting. 
+        # Usually: Right in Image (+u) = +x in Cam, Down in Image (+v) = +y in Cam.
         x_cam = (u - self.img_center_x) / self.ppm
         y_cam = (v - self.img_center_y) / self.ppm 
         
@@ -68,6 +74,7 @@ class EyeInHand:
         p_gripper = self.matrix_cam2gripper @ p_cam
         
         # 3. Transform Gripper -> Base
+        # We need to construct the transformation matrix of the Robot Flange relative to Base
         t_base = np.eye(4)
         t_base[:3, 3] = robot_pose_vec[:3]
         t_base[:3, :3] = R.from_rotvec(robot_pose_vec[3:6]).as_matrix()

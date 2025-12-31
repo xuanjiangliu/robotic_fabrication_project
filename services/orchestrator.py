@@ -2,177 +2,155 @@ import time
 import logging
 import sys
 import os
+import cv2
+import numpy as np
 import requests
 
 # Setup Import Paths
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# --- CHANGED: Import the Trigger Client, NOT the Motion Wrapper ---
-from pkg.drivers.robotiq_v2 import RTDETriggerClient
+# --- NEW IMPORTS ---
+from pkg.drivers.ur_rtde_wrapper import URRobot, URCapListener
+from pkg.vision.eye_in_hand import EyeInHand
 from pkg.drivers.sv08_moonraker import MoonrakerClient
+from pkg.skills.visual_harvest import VisualHarvester
 
 # --- CONFIGURATION ---
 ROBOT_IP = "192.168.50.82"
 PRINTER_IP = "192.168.50.231"
 API_URL = "http://127.0.0.1:5000/api"
+CAMERA_INDEX = 1
 
-# Tuning: How long to wait for the robot to finish the physical harvest?
-# (This blocks Python so it doesn't try to start the next print too early)
-HARVEST_DURATION_SEC = 10
+# Vision Configuration
+CAMERA_OFFSET_CFG = "config/camera_offset.json"
+WHITE_THRESHOLD = 160
+MIN_AREA = 500
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [Orchestrator] - %(message)s')
 logger = logging.getLogger()
 
-def report_status(robot_state, printer_state, temp=0.0, progress=0.0, console=[]):
-    """Helper to push telemetry to Dashboard."""
-    try:
-        requests.post(f"{API_URL}/status/update", json={
-            "robot": robot_state,
-            "printer": printer_state,
-            "temp": temp,
-            "progress": progress,
-            "console": console
-        }, timeout=1)
-    except:
-        pass # Don't crash if Dashboard is reloading
+def detect_object_robust(cap):
+    """
+    Robust Blob Detection (migrated from test_object_approach.py).
+    Returns (u, v) of the target center.
+    """
+    ret, frame = cap.read()
+    if not ret: return None, None
+
+    # ROI Masking (Ignore walls/glare)
+    h, w = frame.shape[:2]
+    mask_roi = np.zeros((h, w), dtype=np.uint8)
+    cv2.rectangle(mask_roi, (200, 200), (1080, 720), 255, -1)
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, WHITE_THRESHOLD, 255, cv2.THRESH_BINARY)
+    binary = cv2.bitwise_and(binary, binary, mask=mask_roi)
+    
+    # Cleanup
+    binary = cv2.erode(binary, None, iterations=2) # type: ignore
+    binary = cv2.dilate(binary, None, iterations=2) # type: ignore
+
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if contours:
+        # Largest blob
+        c = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(c) > MIN_AREA:
+            M = cv2.moments(c)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                return cx, cy
+
+    return None, None
 
 def main():
-    logger.info("Initializing Orchestrator (Listener Mode)...")
-    logger.info(f"Targeting Robot: {ROBOT_IP} | Printer: {PRINTER_IP}")
+    logger.info("Initializing RELAY ORCHESTRATOR...")
 
-    # 1. Initialize Clients
-    trigger = RTDETriggerClient(ROBOT_IP)
+    # 1. Initialize Systems
+    # Client: To read where the robot IS (for vision math)
+    robot_monitor = URRobot(ROBOT_IP)
+    # Server: To tell the robot where to GO (handshake)
+    ur_cap = URCapListener(ip='0.0.0.0', port=50002)
+    
+    vision = EyeInHand(CAMERA_OFFSET_CFG)
     printer = MoonrakerClient(PRINTER_IP)
 
-    # 2. Establish Connection to Robot's Nervous System
-    if not trigger.connect():
-        logger.error("❌ Robot Trigger Connection Failed. Check IP.")
-        return
-    
-    # 3. Safety Check: Is the Tablet Program actually running?
-    if not trigger.is_program_running():
-        logger.warning("⚠️  Robot Program is NOT running.")
-        logger.warning("    Action: Go to Tablet -> Load Program -> Press Play.")
-        # We continue anyway, hoping the user starts it before the first harvest.
+    # Initialize Camera
+    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_MSMF)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    while True:
-        try:
-            # --- PHASE 1: IDLE MONITORING ---
-            p_status = printer.get_status()
-            p_temp = printer.get_bed_temperature()
-            
-            # Fetch Console Logs
-            p_console = []
-            if hasattr(printer, 'get_console_lines'):
-                p_console = printer.get_console_lines(limit=8)
-            
-            # Check Robot Health (Just boolean check for now)
-            r_status = "Ready" if trigger.is_program_running() else "Halted"
-            
-            report_status(r_status, p_status, p_temp, 0.0, p_console)
+    # Connect to RTDE (Monitor)
+    if not robot_monitor.connect():
+        logger.warning("Could not connect to RTDE Monitor. Vision math may fail.")
 
-            # --- PHASE 2: POLL FOR WORK ---
-            try:
-                resp = requests.get(f"{API_URL}/jobs/next", timeout=2)
-            except requests.exceptions.ConnectionError:
-                logger.warning("Waiting for Dashboard API...")
-                time.sleep(5)
-                continue
+    try:
+        while True:
+            print("\n--- READY FOR HARVEST CYCLE ---")
+            print("1. Robot should be moving to 'External Control' node...")
             
-            if resp.status_code == 204:
-                # No work in queue
-                time.sleep(2)
-                continue
+            # --- STEP 1: HANDSHAKE (Wait for Robot) ---
+            # The robot moves to the "External Control" node and opens a connection.
+            # We block here until that happens.
+            ur_cap.wait_for_connection()
             
-            # --- PHASE 3: JOB STARTED ---
-            payload = resp.json()
-            job = payload['job']
-            settings = payload['settings']
+            # --- STEP 2: GET CONTEXT (Pose) ---
+            # The robot is now stationary at the "Observation Pose".
+            # We flush the camera buffer to get a fresh frame
+            for _ in range(5): cap.read()
             
-            logger.info(f"📥 Received Job: {job['id']}")
-            logger.info(f"⚙️ Settings: Temp={settings['bed_temp']}C, Auto-Harvest={settings['auto_harvest']}")
-
-            # Upload & Start Print
-            report_status(r_status, "Uploading", p_temp, 0.0, p_console)
-            filename = f"job_{job['id']}.gcode"
-            
-            if not printer.upload_gcode(job['gcode'], filename):
-                logger.error("Upload failed.")
-                continue 
-            
-            if not printer.start_print(filename):
-                logger.error("Print start failed.")
+            current_pose = robot_monitor.get_tcp_pose()
+            if not current_pose:
+                logger.error("Failed to get robot pose via RTDE!")
+                ur_cap.close() # Release robot
                 continue
 
-            # --- PHASE 4: PRINTING LOOP ---
-            while True:
-                p_status = printer.get_status()
-                p_temp = printer.get_bed_temperature()
-                p_prog = printer.get_progress()
-                if hasattr(printer, 'get_console_lines'):
-                    p_console = printer.get_console_lines(limit=8)
-                
-                report_status(r_status, p_status, p_temp, p_prog, p_console)
-                
-                if p_status == "complete":
-                    break
-                elif p_status in ["error", "offline"]:
-                    logger.error("Printer Error.")
-                    break
-                time.sleep(2) 
+            logger.info(f"Robot at Observation Pose: {current_pose}")
 
-            if p_status != "complete":
-                continue 
-
-            # --- PHASE 5: COOLDOWN ---
-            target_temp = settings['bed_temp']
-            logger.info(f"Cooling down to {target_temp:.1f}C...")
+            # --- STEP 3: VISION CALCULATION ---
+            u, v = detect_object_robust(cap)
             
-            while True:
-                curr_temp = printer.get_bed_temperature()
-                report_status(r_status, "Cooling", curr_temp, 1.0, p_console)
-                
-                if curr_temp <= target_temp:
-                    break
-                time.sleep(5)
+            if u is None:
+                logger.warning("Vision failed: No object found.")
+                # We send the robot back to "External Control" or a Safe Home
+                # For now, just close connection, robot might error out or skip
+                ur_cap.close()
+                continue
 
-            # --- PHASE 6: THE HANDSHAKE (HARVEST) ---
-            if settings['auto_harvest']:
-                logger.info("🤖 Initiating Harvest Sequence...")
-                report_status("Harvesting", "Complete", curr_temp, 1.0, p_console)
-                
-                # A. Verify Link
-                if trigger.is_program_running():
-                    # B. Pull the Trigger
-                    if trigger.trigger_cycle():
-                        logger.info("✅ Signal Sent (Reg 18 -> 1).")
-                        logger.info(f"⏳ Waiting {HARVEST_DURATION_SEC}s for robot execution...")
-                        
-                        # C. Wait for Physical Action
-                        # (The robot is now moving autonomously)
-                        time.sleep(HARVEST_DURATION_SEC)
-                        
-                        logger.info("✅ Harvest Time Elapsed.")
-                    else:
-                        logger.error("❌ Failed to send trigger signal.")
-                else:
-                    logger.error("❌ Robot is NOT running. Cannot Harvest.")
-            else:
-                logger.info("⚠️ Auto-Harvest Disabled by Job Settings.")
-
-            # --- PHASE 7: FINISH ---
-            requests.post(f"{API_URL}/jobs/{job['id']}/complete", json={"result": "success"})
+            # Convert Pixels -> Robot Coordinates (x, y)
+            target_x, target_y = vision.pixel_to_robot(u, v, current_pose) #type: ignore
             
-            # Cleanup Printer Motors
-            printer.execute_gcode("M84") 
+            # Construct the Approach Pose
+            # We keep the current Z (or set a specific hover Z), Rx, Ry, Rz
+            # NOTE: Update '0.15' to your desired approach height if different
+            approach_pose = [
+                target_x, 
+                target_y, 
+                current_pose[2], # Maintain current height (or use fixed hover height)
+                current_pose[3], 
+                current_pose[4], 
+                current_pose[5]
+            ]
+            
+            logger.info(f"Target Found at {u},{v}. Approach Vector: {approach_pose}")
 
-        except KeyboardInterrupt:
-            logger.info("Stopping Orchestrator...")
-            trigger.disconnect()
-            break
-        except Exception as e:
-            logger.error(f"Loop Error: {e}")
-            time.sleep(5)
+            # --- STEP 4: THE RELAY (Send Command) ---
+            # We send the move command. The robot executes it, then exits the script,
+            # allowing the PolyScope tree to continue to the "Grip" sequence.
+            ur_cap.send_move_script(approach_pose, acc=0.8, vel=0.5)
+
+            # --- STEP 5: WAIT FOR CYCLE ---
+            # The robot is now executing the local Grip -> Drop loop.
+            # We sleep to avoid catching the immediate reconnection if it loops fast.
+            time.sleep(5) 
+
+    except KeyboardInterrupt:
+        logger.info("Stopping Orchestrator...")
+    finally:
+        ur_cap.close()
+        robot_monitor.disconnect()
+        cap.release()
 
 if __name__ == "__main__":
     main()
