@@ -23,7 +23,7 @@ STATE = {
     "printer_status": "Offline",
     "printer_temp": 0.0,
     "job_progress": 0.0,
-    "printer_console": [] # <--- NEW: Stores Klipper logs
+    "printer_console": [] 
 }
 
 # Settings (User Adjustable)
@@ -50,7 +50,7 @@ def get_dashboard_data():
             "printer": STATE['printer_status'],
             "temp": STATE['printer_temp'],
             "progress": STATE['job_progress'],
-            "console": STATE['printer_console'] # <--- NEW
+            "console": STATE['printer_console'] 
         },
         "queue": STATE['queue'],
         "history": STATE['history'][-10:],
@@ -137,6 +137,20 @@ def complete_job(job_id):
         return jsonify({"status": "ok"})
     return jsonify({"error": "Mismatch"}), 400
 
+# --- NEW: FORCE CLEAR ENDPOINT ---
+@app.route('/api/jobs/force_clear', methods=['POST'])
+def force_clear():
+    """Manually resets the current job and status."""
+    if STATE['current_job']:
+        logger.warning(f"⚠️ User Force-Cleared Job {STATE['current_job']['id']}")
+        STATE['current_job'] = None
+    
+    # Also reset status text just in case
+    STATE['printer_status'] = "Idle"
+    STATE['job_progress'] = 0.0
+    
+    return jsonify({"status": "cleared"})
+
 # --- CONTROLS ---
 @app.route('/api/queue/control', methods=['POST'])
 def queue_control():
@@ -171,12 +185,25 @@ def delete_job(job_id):
 
 @app.route('/api/jobs/<job_id>/promote', methods=['POST'])
 def promote_job(job_id):
-    tgt = next((j for j in STATE['queue'] if j['id'] == job_id), None)
-    if tgt:
-        STATE['queue'].remove(tgt)
-        STATE['queue'].insert(0, tgt)
-        return jsonify({"status": "promoted"})
-    return jsonify({"error": "Not found"}), 404
+    # Find index first to avoid race conditions with remove/insert
+    try:
+        idx = next((i for i, j in enumerate(STATE['queue']) if j['id'] == job_id), -1)
+        
+        if idx > 0: # If found and not already top
+            job = STATE['queue'].pop(idx)
+            STATE['queue'].insert(0, job)
+            logger.info(f"⬆️ Promoted job {job_id} to top of queue")
+            return jsonify({"status": "promoted"})
+        elif idx == 0:
+            return jsonify({"status": "already_top"})
+        
+        return jsonify({"error": "Not found"}), 404
+        
+    except Exception as e:
+        logger.error(f"Error promoting job: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

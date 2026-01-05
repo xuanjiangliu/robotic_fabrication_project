@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RoboFab Control Center</title>
     <style>
+        /* ... (Keep existing CSS same as before) ... */
         :root {
             --primary: #2c3e50;
             --accent: #3498db;
@@ -140,7 +141,7 @@
             font-size: 0.85rem;
             line-height: 1.4;
             display: flex;
-            flex-direction: column-reverse;
+            flex-direction: column;
         }
 
         .console-line {
@@ -213,11 +214,9 @@
         /* Upload Zone */
         .upload-zone {
             display: block;
-            /* <--- This fixes the boundary issue */
             border: 2px dashed #bdc3c7;
             border-radius: 8px;
             padding: 30px 20px;
-            /* Increased vertical padding for a better target */
             text-align: center;
             cursor: pointer;
             transition: all 0.2s ease;
@@ -227,7 +226,6 @@
         .upload-zone:hover {
             border-color: var(--accent);
             background: #f0f8ff;
-            /* Light blue tint on hover */
             transform: translateY(-1px);
         }
 
@@ -313,7 +311,13 @@
         <div style="display:flex; flex-direction:column; gap:20px;">
 
             <div class="card">
-                <h2>Active Job</h2>
+                <div
+                    style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #f0f0f0; padding-bottom:10px; margin-bottom:10px;">
+                    <h2 style="border:none; margin:0; padding:0;">Active Job</h2>
+                    <button class="btn-warning btn-small" onclick="forceClearJob()"
+                        title="Manually resets job status if stuck">⚠️ Clear Status</button>
+                </div>
+
                 <div id="active-job-panel">
                     <div style="display:flex; justify-content:space-between; align-items:end;">
                         <div>
@@ -426,7 +430,8 @@
 
         async function fetchDashboard() {
             try {
-                const res = await fetch(`${API_URL}/dashboard_data`);
+                // FIXED: Added timestamp ?t= to prevent caching
+                const res = await fetch(`${API_URL}/dashboard_data?t=${Date.now()}`);
                 const data = await res.json();
                 render(data);
             } catch (err) {
@@ -570,11 +575,10 @@
                     });
 
                     if (res.ok) {
-                        // Reset Form
                         fileInput.value = "";
                         document.getElementById('file-label').innerText = "📂 Click to Select G-Code";
                         estInput.value = "";
-                        fetchDashboard(); // Refresh UI
+                        fetchDashboard();
                     } else {
                         alert("Upload Failed: Server Error");
                     }
@@ -616,8 +620,21 @@
             fetchDashboard();
         }
 
+        // --- FIXED: Robust Promote Function ---
         async function promoteJob(id) {
-            await fetch(`${API_URL}/jobs/${id}/promote`, { method: 'POST' });
+            console.log("Attempting to promote job:", id);
+            try {
+                const res = await fetch(`${API_URL}/jobs/${id}/promote`, { method: 'POST' });
+                if (!res.ok) {
+                    const txt = await res.text();
+                    alert("Failed to promote: " + txt);
+                } else {
+                    console.log("Success!");
+                }
+            } catch (e) {
+                console.error(e);
+                alert("Connection Error while promoting");
+            }
             fetchDashboard();
         }
 
@@ -633,9 +650,18 @@
         }
 
         async function triggerEstop() {
-            if (!confirm("🔴 EMERGENCY STOP? This will kill power.")) return;
             await fetch(`${API_URL}/emergency/stop`, { method: 'POST' });
             alert("E-STOP TRIGGERED. Please reset system manually.");
+        }
+
+        async function forceClearJob() {
+            if (!confirm("⚠️ Force Clear Job State? \nUse this if the dashboard is stuck saying 'Running' but the printer is idle.")) return;
+            try {
+                await fetch(`${API_URL}/jobs/force_clear`, { method: 'POST' });
+                fetchDashboard();
+            } catch (err) {
+                alert("Failed to clear status.");
+            }
         }
 
         setInterval(fetchDashboard, 1000);
