@@ -1,5 +1,5 @@
-import rtde_receive # type: ignore
-import rtde_control # <--- ADDED for Vision
+import rtde_receive
+import rtde_control
 import socket
 import time
 import struct
@@ -8,14 +8,15 @@ class URRobot:
     """
     Client: Monitors Robot State AND Controls Movement.
     1. Monitors State (rtde_receive)
-    2. Sends Moves (rtde_control) - NEW
-    3. Controls Freedrive (socket) - PRESERVED
+    2. Sends Moves (rtde_control)
+    3. Controls Freedrive (socket)
+    4. Executes Atomic Transactions (sendCustomScript) - NEW
     """
     def __init__(self, ip_address):
         self.ip_address = ip_address
         self.port_safety = 30002 
         self.rtde_r = None
-        self.rtde_c = None # <--- ADDED
+        self.rtde_c = None
         self.connected = False
 
     def connect(self):
@@ -24,7 +25,7 @@ class URRobot:
             # 1. Connect Receiver (Read-Only)
             self.rtde_r = rtde_receive.RTDEReceiveInterface(self.ip_address)
             
-            # 2. Connect Control (Write/Move) - Protected in case robot is locked
+            # 2. Connect Control (Write/Move)
             try:
                 self.rtde_c = rtde_control.RTDEControlInterface(self.ip_address)
                 print("✅ Control Interface (30004) Connected.")
@@ -45,20 +46,18 @@ class URRobot:
             return None
         return self.rtde_r.getActualTCPPose()
 
-    # --- NEW: Motion for Vision System ---
     def move_linear(self, pose, speed=0.25, accel=1.2):
         """
         Blocking linear move. Returns True if successful.
-        Used by: pkg/skills/visual_harvest.py
+        Used for Phase A/B (Non-critical moves).
         """
         if not self.rtde_c:
             print("❌ MOVE FAILED: No Control Interface.")
             return False
             
         try:
-            # Check if we can move
             if not self.rtde_c.isProgramRunning():
-                # If we are in Remote Control, this usually auto-starts.
+                # If remote control is active, this usually auto-starts.
                 pass 
 
             print(f" -> Moving to: [{pose[0]:.3f}, {pose[1]:.3f}, {pose[2]:.3f}, ...]")
@@ -72,11 +71,50 @@ class URRobot:
             print(f"❌ Move Error: {e}")
             return False
 
+    # --- NEW: Transactional Script Execution ---
+    def execute_atomic_script(self, script_content):
+        """
+        Wraps a raw URScript in a function and sends it to the robot.
+        Use this for critical sequences (Pick-and-Place) that cannot be interrupted.
+        """
+        if not self.rtde_c:
+            print("❌ EXEC FAILED: No Control Interface.")
+            return False
+
+        print(f"[Atomic] Sending script transaction...")
+        
+        # We wrap the user content in a secondary function to ensure valid syntax
+        # The 'def' keyword is required by the UR interpreter for function definitions.
+        full_script = f"""
+        def atomic_transaction():
+            {script_content}
+        end
+        """
+        
+        try:
+            # sendCustomScriptFunction sends the code to the robot's secondary interpreter.
+            # It defines the function and effectively calls it.
+            self.rtde_c.sendCustomScriptFunction("atomic_transaction", full_script)
+            
+            # Robust wait for completion:
+            # 1. Wait for robot to acknowledge and start (program running becomes True)
+            time.sleep(0.5) 
+            
+            # 2. Block while the robot is executing the script
+            while self.rtde_c.isProgramRunning():
+                time.sleep(0.1)
+                
+            print("✅ Atomic Transaction Complete.")
+            return True
+        except Exception as e:
+            print(f"❌ Script Error: {e}")
+            return False
+
     def stop(self):
         if self.rtde_c:
             self.rtde_c.stopL()
 
-    # --- ORIGINAL: Freedrive & Sockets (PRESERVED) ---
+    # --- Freedrive & Sockets ---
     def enable_freedrive_translation_only(self):
         """
         Locks Orientation (Rx, Ry, Rz) but allows Translation (X, Y, Z).
@@ -104,7 +142,7 @@ class URRobot:
         if self.rtde_r: 
             try: self.rtde_r.disconnect()
             except: pass
-        if self.rtde_c: # <--- Clean up control too
+        if self.rtde_c:
             try: self.rtde_c.disconnect()
             except: pass
         self.connected = False
@@ -119,11 +157,10 @@ class URRobot:
         except Exception as e:
             print(f"[Monitor] Socket Send Error: {e}")
 
-# --- RESTORED: URCapListener Class ---
 class URCapListener:
     """
     Server: Handles the 'External Control' Handshake.
-    Used by: pkg/drivers/robotiq_v2.py (Orchestrator Trigger)
+    Legacy/Alternative method. Kept for compatibility.
     """
     def __init__(self, ip='0.0.0.0', port=50002):
         self.ip = ip
@@ -137,16 +174,12 @@ class URCapListener:
         print(f"[URCapListener] Listening on {self.ip}:{self.port}")
 
     def wait_for_connection(self):
-        """Blocks until the robot connects."""
         print("[URCapListener] Waiting for robot handshake...")
         self.client_conn, self.addr = self.sock.accept()
         print(f"[URCapListener] Robot connected from {self.addr}")
         return True
 
     def send_move_script(self, target_pose, acc=0.5, vel=0.5):
-        """
-        Sends a movej() command to the robot.
-        """
         if not self.client_conn:
             print("[Error] No robot connection.")
             return
