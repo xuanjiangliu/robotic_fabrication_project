@@ -3,7 +3,7 @@ import logging
 import sys
 import os
 import requests
-import yaml 
+import yaml  # <--- New Dependency: pip install pyyaml
 
 # Setup Import Paths
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -12,10 +12,13 @@ from pkg.drivers.robotiq_v2 import RTDETriggerClient
 from pkg.drivers.sv08_moonraker import MoonrakerClient
 
 # --- CONFIGURATION LOADING ---
+# Path to the shared configuration file
 CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/cell_config.yaml'))
 
 def load_network_config(path):
-    """Loads network settings from the YAML config file."""
+    """
+    Loads network settings from the YAML config file.
+    """
     if not os.path.exists(path):
         print(f"❌ CRITICAL ERROR: Configuration file not found at: {path}")
         sys.exit(1)
@@ -37,7 +40,7 @@ PRINTER_IP = net_config.get('printer_ip')
 CONTROL_PC_IP = net_config.get('control_pc_ip', '127.0.0.1')
 API_URL = f"http://{CONTROL_PC_IP}:5000/api"
 
-# Tuning
+# Tuning: How long to wait for the robot to finish the physical harvest?
 HARVEST_DURATION_SEC = 10
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [Orchestrator] - %(message)s')
@@ -54,7 +57,7 @@ def report_status(robot_state, printer_state, temp=0.0, progress=0.0, console=[]
             "console": console
         }, timeout=1)
     except:
-        pass 
+        pass # Don't crash if Dashboard is reloading
 
 def main():
     logger.info("Initializing Orchestrator (Standard Mode)...")
@@ -73,7 +76,7 @@ def main():
         logger.error(f"❌ Robot Trigger Connection Failed to {ROBOT_IP}. Check Network.")
         return
     
-    # 3. Safety Check
+    # 3. Safety Check: Is the Tablet Program actually running?
     if not trigger.is_program_running():
         logger.warning("⚠️  Robot Program is NOT running.")
         logger.warning("    Action: Go to Tablet -> Load Program -> Press Play.")
@@ -114,6 +117,14 @@ def main():
             
             logger.info(f"📥 Received Job: {job['id']}")
             logger.info(f"⚙️ Settings: Temp={settings['bed_temp']}C, Auto-Harvest={settings['auto_harvest']}")
+
+            # --- Auto-Home Before Print ---
+            logger.info("🏠 Homing Printer (G28)...")
+            printer.execute_gcode("G28")
+            # Wait briefly to ensure Klipper registers the command and starts moving
+            # before we attempt to start the print file.
+            time.sleep(15) 
+            # -----------------------------------
 
             # Upload & Start Print
             report_status(r_status, "Uploading", p_temp, 0.0, p_console)
@@ -171,7 +182,7 @@ def main():
                         logger.info("✅ Signal Sent (Reg 18 -> 1).")
                         logger.info(f"⏳ Waiting {HARVEST_DURATION_SEC}s for robot execution...")
                         
-                        # C. Wait for Physical Action
+                        # C. Wait for Physical Action (Original Logic)
                         time.sleep(HARVEST_DURATION_SEC)
                         
                         logger.info("✅ Harvest Time Elapsed.")
