@@ -3,21 +3,41 @@ import logging
 import sys
 import os
 import requests
+import yaml 
 
 # Setup Import Paths
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# --- CHANGED: Import the Trigger Client, NOT the Motion Wrapper ---
 from pkg.drivers.robotiq_v2 import RTDETriggerClient
 from pkg.drivers.sv08_moonraker import MoonrakerClient
 
-# --- CONFIGURATION ---
-ROBOT_IP = "192.168.50.82"
-PRINTER_IP = "192.168.50.231"
-API_URL = "http://127.0.0.1:5000/api"
+# --- CONFIGURATION LOADING ---
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/cell_config.yaml'))
 
-# Tuning: How long to wait for the robot to finish the physical harvest?
-# (This blocks Python so it doesn't try to start the next print too early)
+def load_network_config(path):
+    """Loads network settings from the YAML config file."""
+    if not os.path.exists(path):
+        print(f"❌ CRITICAL ERROR: Configuration file not found at: {path}")
+        sys.exit(1)
+        
+    try:
+        with open(path, 'r') as f:
+            full_config = yaml.safe_load(f)
+            return full_config.get('network', {})
+    except Exception as e:
+        print(f"❌ CRITICAL ERROR: Failed to parse config file. {e}")
+        sys.exit(1)
+
+# Load Configuration
+net_config = load_network_config(CONFIG_PATH)
+
+# Apply Configuration
+ROBOT_IP = net_config.get('robot_ip')
+PRINTER_IP = net_config.get('printer_ip')
+CONTROL_PC_IP = net_config.get('control_pc_ip', '127.0.0.1')
+API_URL = f"http://{CONTROL_PC_IP}:5000/api"
+
+# Tuning
 HARVEST_DURATION_SEC = 10
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [Orchestrator] - %(message)s')
@@ -34,26 +54,29 @@ def report_status(robot_state, printer_state, temp=0.0, progress=0.0, console=[]
             "console": console
         }, timeout=1)
     except:
-        pass # Don't crash if Dashboard is reloading
+        pass 
 
 def main():
-    logger.info("Initializing Orchestrator (Listener Mode)...")
-    logger.info(f"Targeting Robot: {ROBOT_IP} | Printer: {PRINTER_IP}")
+    logger.info("Initializing Orchestrator (Standard Mode)...")
+    logger.info(f"Loaded Config -> Robot: {ROBOT_IP} | Printer: {PRINTER_IP} | Dashboard: {CONTROL_PC_IP}")
 
     # 1. Initialize Clients
+    if not ROBOT_IP or not PRINTER_IP:
+        logger.error("❌ Configuration Error: Missing IP addresses in cell_config.yaml")
+        return
+
     trigger = RTDETriggerClient(ROBOT_IP)
     printer = MoonrakerClient(PRINTER_IP)
 
     # 2. Establish Connection to Robot's Nervous System
     if not trigger.connect():
-        logger.error("❌ Robot Trigger Connection Failed. Check IP.")
+        logger.error(f"❌ Robot Trigger Connection Failed to {ROBOT_IP}. Check Network.")
         return
     
-    # 3. Safety Check: Is the Tablet Program actually running?
+    # 3. Safety Check
     if not trigger.is_program_running():
         logger.warning("⚠️  Robot Program is NOT running.")
         logger.warning("    Action: Go to Tablet -> Load Program -> Press Play.")
-        # We continue anyway, hoping the user starts it before the first harvest.
 
     while True:
         try:
@@ -66,7 +89,7 @@ def main():
             if hasattr(printer, 'get_console_lines'):
                 p_console = printer.get_console_lines(limit=8)
             
-            # Check Robot Health (Just boolean check for now)
+            # Check Robot Health
             r_status = "Ready" if trigger.is_program_running() else "Halted"
             
             report_status(r_status, p_status, p_temp, 0.0, p_console)
@@ -75,7 +98,7 @@ def main():
             try:
                 resp = requests.get(f"{API_URL}/jobs/next", timeout=2)
             except requests.exceptions.ConnectionError:
-                logger.warning("Waiting for Dashboard API...")
+                logger.warning(f"Waiting for Dashboard API at {CONTROL_PC_IP}...")
                 time.sleep(5)
                 continue
             
@@ -149,7 +172,6 @@ def main():
                         logger.info(f"⏳ Waiting {HARVEST_DURATION_SEC}s for robot execution...")
                         
                         # C. Wait for Physical Action
-                        # (The robot is now moving autonomously)
                         time.sleep(HARVEST_DURATION_SEC)
                         
                         logger.info("✅ Harvest Time Elapsed.")
