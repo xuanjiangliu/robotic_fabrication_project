@@ -34,7 +34,7 @@ CONTROL_PC_IP = net_config.get('control_pc_ip', '127.0.0.1')
 API_URL = f"http://{CONTROL_PC_IP}:5000/api"
 
 # Tuning
-HARVEST_DURATION_SEC = 10
+HARVEST_DURATION_SEC = 33
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [Orchestrator] - %(message)s')
 logger = logging.getLogger()
