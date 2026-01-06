@@ -1,31 +1,20 @@
-import sys
-import os
-import logging
-
-# Ensure project root is in path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
+# scripts/diagnostics/test_pneumatic_protocol.py
+import time
 from pkg.drivers.pneumatic_serial import MockPneumaticSerial
 
-def main():
-    logging.basicConfig(level=logging.INFO)
-    print("--- Diagnostic: Pneumatic Serial Protocol ---")
+def test_async_pulse():
+    pneumatic = MockPneumaticSerial()
     
-    # Initialize mock driver
-    pneumatic = MockPneumaticSerial(port='COM_FAKE')
+    print("Starting a 2-second pulse...")
+    pneumatic.start_pulse(1, 2000)
     
-    test_cases = [
-        {'ch': 1, 'time': 500},
-        {'ch': 2, 'time': 1500},
-    ]
-    
-    for test in test_cases:
-        print(f"\n▶️ Testing Channel {test['ch']} for {test['time']}ms...")
-        success = pneumatic.send_pulse(test['ch'], test['time'])
-        if success:
-            print(f"✅ Pulse cycle completed for Channel {test['ch']}")
-            
-    pneumatic.close()
+    count = 0
+    while pneumatic.is_busy():
+        print(f"Looping... (Vision Frame #{count})")
+        count += 1
+        time.sleep(0.1) # Simulate a 10Hz vision loop
+        
+    print("Done! Main loop was never blocked.")
 
 if __name__ == "__main__":
-    main()
+    test_async_pulse()
