@@ -11,3 +11,4 @@ mediapipe
 flask
 ultralytics
 pyyaml
+opencv-contrib-python
