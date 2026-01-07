@@ -5,7 +5,7 @@ import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from pkg.camera import Camera
+from pkg.vision.eye_in_hand import EyeInHand
 from pkg.vision.analyzer import DepthGatedAnalyzer
 
 def main():

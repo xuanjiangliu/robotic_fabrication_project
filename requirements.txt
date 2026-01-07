@@ -13,3 +13,5 @@ ultralytics
 pyyaml
 opencv-contrib-python
 pyserial
+pyorbbecsdk2    # Camera sdk for Orbbec gemini 335l
+cmake
