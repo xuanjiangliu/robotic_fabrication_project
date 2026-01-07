@@ -10,6 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from pkg.drivers.robotiq_v2 import RTDETriggerClient
 from pkg.drivers.sv08_moonraker import MoonrakerClient
+from pkg.core.characterization_manager import CharacterizationManager, CharacterizationJob
 
 # --- CONFIGURATION LOADING ---
 CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/cell_config.yaml'))
@@ -61,6 +62,8 @@ def main():
 
     trigger = RTDETriggerClient(ROBOT_IP)
     printer = MoonrakerClient(PRINTER_IP)
+
+    char_manager = CharacterizationManager(camera_idx=1, pneu_port="COM5")
 
     # Initial Connection
     if not trigger.connect():
@@ -174,6 +177,9 @@ def main():
             # --- PHASE 5: COOLDOWN ---
             target_temp = settings['bed_temp']
             logger.info(f"Cooling down to {target_temp:.1f}C...")
+
+            # OPTIMIZATION: Pre-warm camera while waiting for temperature
+            # char_manager.engine.setup()
             
             while True:
                 curr_temp = printer.get_bed_temperature()
@@ -182,13 +188,10 @@ def main():
                     break
                 time.sleep(5)
 
-            # --- PHASE 6: THE HANDSHAKE (HARVEST) ---
+            # --- PHASE 6: THE DOUBLE-HANDSHAKE (HARVEST & TEST) ---
             if settings['auto_harvest']:
-                logger.info("🤖 Initiating Harvest Sequence...")
-                report_status("Harvesting", "Complete", curr_temp, 1.0, p_console)
+                logger.info("🤖 Initiating Synchronized Harvest & Characterization...")
                 
-                # --- FIXED: ROBUST TRIGGER ---
-                # Ensure we are connected before pulling the trigger
                 try:
                     # 1. Force a check/reconnect if needed
                     try:
@@ -200,24 +203,49 @@ def main():
 
                     # 2. Proceed with Harvest
                     if trigger.is_program_running():
+                        # --- HANDSHAKE 1: START HARVEST ---
                         if trigger.trigger_cycle():
-                            logger.info("✅ Signal Sent (Reg 18 -> 1).")
-                            logger.info(f"⏳ Waiting {HARVEST_DURATION_SEC}s...")
-                            time.sleep(HARVEST_DURATION_SEC)
-                            logger.info("✅ Harvest Time Elapsed.")
+                            logger.info("✅ Signal 1 Sent (Reg 18 -> 1). Robot starting harvest...")
+                            
+                            # 3. Wait for robot to reach the station (Travel Time)
+                            # logger.info(f"⏳ Waiting {HARVEST_DURATION_SEC}s for arrival...")
+                            # time.sleep(HARVEST_DURATION_SEC)
+                            
+                            # --- CHARACTERIZATION PHASE ---
+                            logger.info("🔬 Robot at station. Starting vision analysis...")
+                            report_status("Characterizing", "Stationary", curr_temp, 1.0, p_console)
+                            
+                            char_job = CharacterizationJob(
+                                job_id=str(job['id']),
+                                channel=4,  # Standard channel for PneuNet
+                                pulse_duration_ms=2000,
+                                actuator_type="FGF_Actuator"
+                            )
+
+                            # This blocks until the 3-state loop (Baseline -> Inflation -> Recoil) finishes
+                            test_success = char_manager.run_autonomous_test(char_job)
+                            
+                            if test_success:
+                                logger.info("✅ Characterization complete.")
+                            else:
+                                logger.error("❌ Characterization test failed. Releasing robot for safety.")
+
+                            # --- HANDSHAKE 2: RELEASE ---
+                            # Pulse Reg 18 again to tell the pendant to exit the SECOND wait node
+                            logger.info("🔓 Releasing Robot to complete sequence...")
+                            trigger.trigger_cycle()
+                            logger.info("✅ Signal 2 Sent (Reg 18 -> 1). Harvest cycle complete.")
                         else:
                             logger.error("❌ Failed to send trigger signal.")
                     else:
                         logger.error("❌ Robot is NOT running/connected. Cannot Harvest.")
 
                 except Exception as e:
-                    logger.error(f"❌ Critical Harvest Failure: {e}")
-                # -----------------------------
-            else:
-                logger.info("⚠️ Auto-Harvest Disabled.")
+                    logger.error(f"❌ Critical Harvest/Char Failure: {e}")
 
             # --- PHASE 7: FINISH ---
             requests.post(f"{API_URL}/jobs/{job['id']}/complete", json={"result": "success"})
+            char_manager.engine.cam.stop() # Release camera for next job
             printer.execute_gcode("M84") 
             printer.execute_gcode("SDCARD_RESET_FILE") 
 

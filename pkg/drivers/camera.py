@@ -19,8 +19,12 @@ class Camera:
         Initializes the camera using MSMF and forces MJPG to avoid 
         Windows media format negotiation errors.
         """
+        if self.cap is not None and self.cap.isOpened():
+            return True
+            
         print(f"[Camera] Connecting to Camera {self.camera_index} via MSMF...")
-        
+
+        # ... rest of the existing start() logic ...
         # Open with MSMF backend
         self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_MSMF)
         
